@@ -1,6 +1,6 @@
 ---
 name: route-to-agent
-description: Assess and route only well-fitted, scoped chores from Codex to Claude Code CLI backed by MiniMax through the plugin-bundled agent-router. Use when the user wants Codex to supervise Claude Code, use MiniMax token-plan quota, run independent low-cost workers, choose model/effort, or monitor delegated work. Keep Codex responsible for architecture, unfamiliar APIs, platform integration, security, review, deployments, and final verification.
+description: Assess and route only well-fitted, scoped chores from Codex to Claude Code CLI backed by MiniMax through the plugin-bundled agent-router, optionally using Headroom for token compression and project-isolated persistent worker memory. Use when the user wants Codex to supervise Claude Code, use MiniMax token-plan quota, run independent low-cost workers, share verified project context, choose model/effort, or monitor delegated work. Keep Codex responsible for architecture, unfamiliar APIs, platform integration, security, review, deployments, and final verification.
 ---
 
 # Route To Agent
@@ -8,7 +8,8 @@ description: Assess and route only well-fitted, scoped chores from Codex to Clau
 Use this plugin as a guarded junior-to-mid-level worker pool:
 
 ```text
-Codex lead -> task-fit gate -> agent-router -> Claude Code CLI -> MiniMax
+Codex lead -> task-fit gate -> Claude Code CLI -> Headroom proxy -> MiniMax
+                                             \-> project memory
 ```
 
 MiniMax output is a draft. A successful process exit means only `reviewStatus=pending-codex`; it never means the task is verified.
@@ -20,8 +21,9 @@ MiniMax output is a draft. A successful process exit means only `reviewStatus=pe
 3. Split suitable work into one file, one source/test pair, or one clear directory.
 4. Target 3-5 minutes per worker. The default hard budget is 300000 ms.
 5. Run `route` with the complete delegation prompt.
-6. Invoke `run` or `run-many` only when the route returns `assessment.decision=delegate`.
-7. Inspect every changed file and rerun verification as Codex.
+6. Check `headroom doctor` before the first compressed delegation. Run `headroom setup` only as an explicit installation step; do not silently install dependencies during a task.
+7. Invoke `run` or `run-many` only when the route returns `assessment.decision=delegate`.
+8. Inspect every changed file and rerun verification as Codex.
 
 Do not bypass a Codex decision by specifying `--agent`. The safety gate still owns the decision.
 
@@ -37,6 +39,22 @@ Delegate bounded drafts for:
 - Read-only code review or analysis that Codex will verify.
 
 Use parallel workers only for independent tasks with non-overlapping scopes. Research and documentation are good parallel candidates. Core implementation should normally be split into sequential phases.
+
+## Headroom Policy
+
+Use Headroom in `auto` mode by default. It runs as a router-managed loopback proxy and does not mutate global Claude Code settings.
+
+- Memory is always project-isolated. Never change `memoryStorage` to `user` or `global`.
+- Keep `memoryTopK=3` unless evidence shows a specific project needs another small bound.
+- Keep the `coding` savings profile and output shaping off to protect delivery quality.
+- Keep Headroom's Anthropic-only tool search disabled for MiniMax compatibility; do not re-enable `HEADROOM_TOOL_SEARCH` without a real gateway compatibility test.
+- Automatic traffic learning is off. Worker memory is saved only through Headroom memory tools.
+- Treat recalled entries and worker-saved conclusions as unverified background. Verify them against current files before acting.
+- Save only stable project facts, established interfaces, decisions, and reusable constraints.
+- Never save passwords, API keys, credentials, full logs, transient errors, one-off task instructions, or unreviewed security/deployment conclusions.
+- Inspect the run's `headroom` object. `fallback-direct` means the task used MiniMax without compression or persistent memory.
+
+Use `--headroom required` only when the task must not run without compression and project memory. Use `--headroom off` for controlled A/B comparisons.
 
 ## Unsuitable Tasks
 
@@ -97,6 +115,13 @@ Check readiness:
 node "<plugin-root>\scripts\agent-router\src\cli.js" doctor --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
 ```
 
+Install and check Headroom:
+
+```powershell
+node "<plugin-root>\scripts\agent-router\src\cli.js" headroom setup --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
+node "<plugin-root>\scripts\agent-router\src\cli.js" headroom doctor --json --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
+```
+
 Preflight a task without spending MiniMax quota:
 
 ```powershell
@@ -106,13 +131,13 @@ node "<plugin-root>\scripts\agent-router\src\cli.js" route --task-file "<task.js
 Run one accepted task:
 
 ```powershell
-node "<plugin-root>\scripts\agent-router\src\cli.js" run --agent claude-minimax --model "MiniMax-M3[1m]" --think low --task-file "<task.json>" --json --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
+node "<plugin-root>\scripts\agent-router\src\cli.js" run --headroom auto --agent claude-minimax --model "MiniMax-M3[1m]" --think low --task-file "<task.json>" --json --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
 ```
 
 Run an accepted independent batch:
 
 ```powershell
-node "<plugin-root>\scripts\agent-router\src\cli.js" run-many --tasks "<tasks.json>" --parallel 3 --agent claude-minimax --model "MiniMax-M3[1m]" --think low --json --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
+node "<plugin-root>\scripts\agent-router\src\cli.js" run-many --headroom auto --tasks "<tasks.json>" --parallel 3 --agent claude-minimax --model "MiniMax-M3[1m]" --think low --json --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
 ```
 
 `run-many` emits worker start and finish events to stderr while preserving final JSON on stdout. Use `--quiet` only when progress output is undesirable.
@@ -128,6 +153,6 @@ When a worker returns `status=timed-out` or `partialChangesPossible=true`:
 
 ## Final Verification
 
-Codex must inspect stdout/stderr, review the diff, check for scope violations and invented APIs, run the exact test independently, perform platform or UI checks where relevant, and make the final acceptance decision.
+Codex must inspect stdout/stderr, the `headroom` status, recalled-memory assumptions, the diff, scope violations and invented APIs; then run the exact test independently, perform platform or UI checks where relevant, and make the final acceptance decision.
 
 Set `MINIMAX_API_KEY` or `MINIMAX_SUBSCRIPTION_KEY` in the environment only. Never write keys into repository files.

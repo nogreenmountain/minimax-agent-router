@@ -2,7 +2,28 @@
 
 This runtime is bundled by the `minimax-agent-router` Codex plugin.
 
-The runtime enables a task-fit gate by default. Editing work needs a narrow scope, code work needs an exact test command, each worker has a five-minute default budget, and successful runs remain pending Codex review.
+The runtime enables a task-fit gate by default. Editing work needs a narrow scope, code work needs an exact test command, each worker has a five-minute default budget, and successful runs remain pending Codex review. When installed, a router-managed Headroom proxy compresses Claude Code context and provides project-isolated persistent memory.
+
+## Headroom
+
+Install the pinned runtime into the router-managed virtual environment:
+
+```cmd
+node .\src\cli.js headroom setup --config .\agent-router.config.json
+```
+
+Check or manage the current workspace proxy:
+
+```cmd
+node .\src\cli.js headroom doctor --config .\agent-router.config.json
+node .\src\cli.js headroom start --config .\agent-router.config.json
+node .\src\cli.js headroom stats --json --config .\agent-router.config.json
+node .\src\cli.js headroom stop --config .\agent-router.config.json
+```
+
+The default mode is `auto`. Use `--headroom required` when direct fallback is unacceptable, or `--headroom off` for an A/B comparison. Memory is always project-isolated, recall is capped at three entries, output shaping and automatic learning are disabled, and reports never contain credentials.
+
+The router forces `HEADROOM_TOOL_SEARCH=0` because Headroom's Anthropic-only server tool-search schema is not supported by MiniMax-compatible Anthropic gateways. Compression, CCR, and project memory remain enabled.
 
 For a structured single task, use `route --task-file task.json` first, then reuse the same file with `run --task-file task.json` only when the assessment decision is `delegate`.
 

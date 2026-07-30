@@ -3,8 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
+import { DEFAULT_HEADROOM_CONFIG, sanitizeHeadroomReport } from "./headroom.js";
+
 export const DEFAULT_CONFIG = {
   logPath: ".agent-router/runs.jsonl",
+  headroom: {
+    ...DEFAULT_HEADROOM_CONFIG
+  },
   defaults: {
     agent: "claude-minimax",
     think: "low",
@@ -313,6 +318,13 @@ export function summarizeRuns(runs) {
     totalInputTokens: 0,
     totalOutputTokens: 0,
     totalEstimatedCost: 0,
+    headroom: {
+      enabledRuns: 0,
+      fallbackRuns: 0,
+      requests: 0,
+      inputTokens: 0,
+      tokensSaved: 0
+    },
     byAgent: {},
     byModel: {},
     lastRun: null
@@ -329,6 +341,14 @@ export function summarizeRuns(runs) {
     summary.totalInputTokens += Number(run.inputTokens || 0);
     summary.totalOutputTokens += Number(run.outputTokens || 0);
     summary.totalEstimatedCost = roundMoney(summary.totalEstimatedCost + Number(run.estimatedCost || 0));
+    if (run.headroom?.enabled) {
+      summary.headroom.enabledRuns += 1;
+      summary.headroom.requests += Number(run.headroom.requests || 0);
+      summary.headroom.inputTokens += Number(run.headroom.inputTokens || 0);
+      summary.headroom.tokensSaved += Number(run.headroom.tokensSaved || 0);
+    } else if (String(run.headroom?.status || "").startsWith("fallback")) {
+      summary.headroom.fallbackRuns += 1;
+    }
 
     const agentKey = run.agent || "unknown";
     const modelKey = `${agentKey}::${run.model || "unknown"}`;
@@ -380,12 +400,13 @@ export function executeAgent(prompt, config, options = {}) {
   };
   const args = renderArgs(agent.args || [], templateValues);
   const input = agent.promptMode === "stdin" || !agent.promptMode ? promptText : undefined;
+  const headroomInvocation = prepareHeadroomInvocation(agentName, config, cwd, options);
 
   const result = spawnSync(agent.command, args, {
     cwd,
     input,
     encoding: "utf8",
-    env: { ...process.env, ...(options.env || {}) },
+    env: { ...process.env, ...(options.env || {}), ...headroomInvocation.env },
     maxBuffer: options.maxBuffer || 10 * 1024 * 1024,
     timeout: options.timeoutMs || config.defaults?.timeoutMs || DEFAULT_CONFIG.defaults.timeoutMs,
     windowsHide: true
@@ -401,6 +422,7 @@ export function executeAgent(prompt, config, options = {}) {
   const outputTokens = estimateTokens(stdout);
   const timedOut = result.error?.code === "ETIMEDOUT";
   const status = timedOut ? "timed-out" : result.status === 0 && !result.error ? "ok" : "error";
+  const headroom = readHeadroomReport(headroomInvocation.reportPath);
   const run = {
     id: makeRunId(startedAt),
     startedAt: startedAt.toISOString(),
@@ -422,7 +444,8 @@ export function executeAgent(prompt, config, options = {}) {
     stderrChars: stderr.length,
     inputTokens,
     outputTokens,
-    estimatedCost: estimateCost(inputTokens, outputTokens, agent.pricing)
+    estimatedCost: estimateCost(inputTokens, outputTokens, agent.pricing),
+    ...(headroom ? { headroom } : {})
   };
 
   if (options.logPath) {
@@ -457,6 +480,7 @@ export async function executeAgentAsync(prompt, config, options = {}) {
   const args = renderArgs(agent.args || [], templateValues);
   const input = agent.promptMode === "stdin" || !agent.promptMode ? promptText : undefined;
   const timeoutMs = options.timeoutMs || config.defaults?.timeoutMs || DEFAULT_CONFIG.defaults.timeoutMs;
+  const headroomInvocation = prepareHeadroomInvocation(agentName, config, cwd, options);
 
   return await new Promise((resolve) => {
     let stdout = "";
@@ -467,7 +491,7 @@ export async function executeAgentAsync(prompt, config, options = {}) {
 
     const child = spawn(agent.command, args, {
       cwd,
-      env: { ...process.env, ...(options.env || {}) },
+      env: { ...process.env, ...(options.env || {}), ...headroomInvocation.env },
       windowsHide: true
     });
 
@@ -504,6 +528,7 @@ export async function executeAgentAsync(prompt, config, options = {}) {
       const inputTokens = estimateTokens(promptText);
       const outputTokens = estimateTokens(stdout);
       const status = timedOut ? "timed-out" : exitCode === 0 && !spawnError ? "ok" : "error";
+      const headroom = readHeadroomReport(headroomInvocation.reportPath);
       const run = {
         id: makeRunId(startedAt),
         startedAt: startedAt.toISOString(),
@@ -525,7 +550,8 @@ export async function executeAgentAsync(prompt, config, options = {}) {
         stderrChars: stderr.length,
         inputTokens,
         outputTokens,
-        estimatedCost: estimateCost(inputTokens, outputTokens, agent.pricing)
+        estimatedCost: estimateCost(inputTokens, outputTokens, agent.pricing),
+        ...(headroom ? { headroom } : {})
       };
 
       if (options.logPath) {
@@ -595,6 +621,7 @@ export async function executeManyTasks(tasksInput, config, options = {}) {
       ...route,
       logPath: options.logPath,
       cwd: taskCwd,
+      headroomMode: task.headroomMode || options.headroomMode,
       timeoutMs: task.timeoutMs || options.timeoutMs
     });
 
@@ -937,6 +964,48 @@ function cleanupPromptFile(file) {
     fs.rmSync(path.dirname(file), { recursive: true, force: true });
   } catch {
     // Best-effort cleanup. A stale temp prompt file should not hide the CLI result.
+  }
+}
+
+function prepareHeadroomInvocation(agentName, config, cwd, options) {
+  if (agentName !== "claude-minimax") {
+    return { env: {}, reportPath: null };
+  }
+
+  const reportPath = path.join(
+    os.tmpdir(),
+    `agent-router-headroom-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`
+  );
+  const headroomConfig = deepMerge(DEFAULT_HEADROOM_CONFIG, config.headroom || {});
+  if (options.headroomMode) {
+    headroomConfig.mode = options.headroomMode;
+  }
+
+  return {
+    reportPath,
+    env: {
+      AGENT_ROUTER_HEADROOM_CONFIG: JSON.stringify(headroomConfig),
+      AGENT_ROUTER_HEADROOM_REPORT_PATH: reportPath,
+      AGENT_ROUTER_HEADROOM_PROJECT_ROOT: cwd
+    }
+  };
+}
+
+function readHeadroomReport(reportPath) {
+  if (!reportPath) {
+    return null;
+  }
+  try {
+    const report = sanitizeHeadroomReport(JSON.parse(fs.readFileSync(reportPath, "utf8")));
+    return Object.keys(report).length > 0 ? report : null;
+  } catch {
+    return null;
+  } finally {
+    try {
+      fs.unlinkSync(reportPath);
+    } catch {
+      // The worker may have exited before it could write the sidecar.
+    }
   }
 }
 

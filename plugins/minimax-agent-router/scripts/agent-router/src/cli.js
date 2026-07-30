@@ -4,6 +4,14 @@ import path from "node:path";
 
 import { createMonitorServer } from "./monitor.js";
 import {
+  ensureHeadroomProxy,
+  getHeadroomStatus,
+  installHeadroom,
+  readHeadroomStats,
+  stopHeadroomProxy
+} from "./headroom.js";
+import { resolveMiniMaxConnection } from "./claude-settings.js";
+import {
   chooseRoute,
   DEFAULT_CONFIG,
   executeAgent,
@@ -37,6 +45,11 @@ async function main(argv) {
 
   const { config, path: configPath } = loadConfig(flags.config || "agent-router.config.json", cwd);
   const logPath = getLogPath(config, cwd);
+
+  if (command === "headroom") {
+    await handleHeadroomCommand(positional[0] || "doctor", config, flags, cwd);
+    return;
+  }
 
   if (command === "doctor") {
     doctor(config, flags);
@@ -77,6 +90,7 @@ async function main(argv) {
       ...route,
       logPath,
       cwd,
+      headroomMode: flags.headroom,
       timeoutMs: Number(flags["timeout-ms"] || flags.timeoutMs || config.defaults?.timeoutMs || 0) || undefined
     });
 
@@ -117,6 +131,7 @@ async function main(argv) {
       parallel: Number(flags.parallel || 2),
       logPath,
       cwd,
+      headroomMode: flags.headroom,
       timeoutMs: Number(flags["timeout-ms"] || flags.timeoutMs || config.defaults?.timeoutMs || 0) || undefined,
       onEvent: (event) => printTaskEvent(event, flags)
     });
@@ -253,8 +268,71 @@ function formatStats(summary, logPath) {
     `Log: ${logPath}`,
     `Runs: ${summary.totalRuns} ok=${summary.okRuns} error=${summary.errorRuns}`,
     `Tokens: input=${summary.totalInputTokens} output=${summary.totalOutputTokens}`,
-    `Estimated cost: $${Number(summary.totalEstimatedCost || 0).toFixed(6)}`
+    `Estimated cost: $${Number(summary.totalEstimatedCost || 0).toFixed(6)}`,
+    `Headroom: enabledRuns=${summary.headroom?.enabledRuns || 0} savedTokens=${summary.headroom?.tokensSaved || 0} fallbackRuns=${summary.headroom?.fallbackRuns || 0}`
   ].join("\n");
+}
+
+async function handleHeadroomCommand(subcommand, config, flags, cwd) {
+  const workspace = path.resolve(cwd, flags.workspace || ".");
+  if (subcommand === "doctor" || subcommand === "status") {
+    const status = await getHeadroomStatus(workspace, config.headroom || {});
+    printPayload(status, flags, formatHeadroomStatus(status));
+    return;
+  }
+
+  if (subcommand === "setup") {
+    const result = installHeadroom(config.headroom || {}, { workspace });
+    printPayload(result, flags, `Headroom installed: ${result.command}`);
+    return;
+  }
+
+  if (subcommand === "start") {
+    const configuredHeadroom = config.headroom || {};
+    const connection = resolveMiniMaxConnection({
+      env: process.env,
+      miniMaxKey: process.env.MINIMAX_API_KEY || process.env.MINIMAX_SUBSCRIPTION_KEY,
+      configuredBaseUrl: configuredHeadroom.upstreamUrl
+    });
+    const result = await ensureHeadroomProxy(workspace, {
+      ...configuredHeadroom,
+      upstreamUrl: connection.baseUrl,
+      mode: "required"
+    });
+    printPayload(result, flags, formatHeadroomStatus(result));
+    return;
+  }
+
+  if (subcommand === "stop") {
+    const result = await stopHeadroomProxy(workspace, config.headroom || {});
+    printPayload(result, flags, `Headroom: ${result.status} workspace=${result.workspaceId}`);
+    return;
+  }
+
+  if (subcommand === "stats") {
+    const status = await getHeadroomStatus(workspace, config.headroom || {});
+    const stats = status.enabled ? await readHeadroomStats(status.baseUrl) : null;
+    const payload = { ...status, ...(stats || {}) };
+    printPayload(payload, flags, formatHeadroomStatus(payload));
+    return;
+  }
+
+  throw new Error(`Unknown Headroom command: ${subcommand}`);
+}
+
+function formatHeadroomStatus(status) {
+  const lines = [
+    `Headroom: ${status.status}`,
+    `Workspace: ${status.workspaceId || "unknown"}`,
+    `Memory scope: ${status.memoryScope || "project"}`
+  ];
+  if (status.baseUrl) {
+    lines.push(`Proxy: ${status.baseUrl}`);
+  }
+  if (status.tokensSaved !== undefined) {
+    lines.push(`Tokens saved: ${status.tokensSaved}`);
+  }
+  return lines.join("\n");
 }
 
 function formatRunMany(result) {
@@ -359,6 +437,11 @@ Commands:
   run-many --tasks f   Run independent tasks with a limited parallel worker pool
   stats                Summarize usage logs
   monitor              Start the local monitoring dashboard
+  headroom doctor      Check Headroom installation and this project's proxy
+  headroom setup       Install pinned Headroom into the router-managed virtual environment
+  headroom start       Start or reuse this project's compression and memory proxy
+  headroom stop        Stop this project's proxy
+  headroom stats       Show this project's live compression statistics
 
 Common options:
   --config <path>      Config file path
@@ -367,6 +450,8 @@ Common options:
   --think <level>      Force thinking strength, such as low, medium, high
   --task-file <path>   Load one structured task JSON object for route or run
   --timeout-ms <ms>    Override the default 5-minute worker budget
+  --headroom <mode>    Use auto, required, or off for this run
+  --workspace <path>   Select the workspace for Headroom lifecycle commands
   --quiet              Hide run-many start/finish progress events
   --json               Print machine-readable JSON
 `);

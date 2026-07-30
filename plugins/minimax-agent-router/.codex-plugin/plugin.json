@@ -1,22 +1,26 @@
 {
   "name": "minimax-agent-router",
-  "version": "0.3.0",
-  "description": "Delegate only well-fitted, scoped chores to Claude Code CLI backed by MiniMax, with task-fit gating, five-minute worker budgets, bounded parallel batches, and mandatory Codex verification.",
+  "version": "0.4.0+codex.20260730103158",
+  "description": "Delegate only well-fitted chores to Claude Code backed by MiniMax, with task gating, Headroom token compression, project-isolated persistent worker memory, bounded parallelism, and mandatory Codex verification.",
   "author": {
     "name": "Local developer"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "MiniMax Agent Router",
-    "shortDescription": "Gate and route suitable small chores to Claude Code + MiniMax.",
-    "longDescription": "A Codex plugin that first assesses task fit, then delegates only low-risk research, documentation, tests, read-only review, and narrowly scoped mechanical implementation to Claude Code CLI through MiniMax. It enforces a five-minute default budget, structured scope and verification prompts, bounded parallel workers, progress events, and pending-Codex review status. Codex keeps ownership of architecture, unfamiliar APIs, platform integration, security, deployment, and final verification.",
+    "shortDescription": "Route suitable chores through MiniMax with compressed, project-scoped memory.",
+    "longDescription": "A Codex plugin that first assesses task fit, then delegates only low-risk research, documentation, tests, read-only review, and narrowly scoped mechanical implementation to Claude Code CLI through MiniMax. A router-managed Headroom proxy reduces repeated context and gives workers persistent project-isolated memory without changing global Claude settings. It enforces a five-minute default budget, bounded parallel workers, progress events, secret-free statistics, and pending-Codex review status. Codex keeps ownership of architecture, unfamiliar APIs, platform integration, security, deployment, and final verification.",
     "developerName": "Local developer",
     "category": "Productivity",
-    "capabilities": ["Write", "Local"],
+    "capabilities": [
+      "Write",
+      "Local"
+    ],
     "defaultPrompt": [
       "Use MiniMax for safe coding chores",
       "Check whether this task is suitable for MiniMax",
       "Check if claude-minimax is ready",
+      "Check Headroom compression and project memory",
       "Delegate this small test fix",
       "Run these independent chores in parallel"
     ]

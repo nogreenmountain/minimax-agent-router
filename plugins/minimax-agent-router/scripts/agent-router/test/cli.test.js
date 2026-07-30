@@ -211,6 +211,103 @@ describe("agent-router CLI", () => {
     assert.match(result.stdout, /run/);
   });
 
+  it("reports project-isolated Headroom readiness", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-headroom-cli-"));
+    const configPath = path.join(tmpDir, "agent-router.config.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        headroom: {
+          mode: "auto",
+          command: path.join(tmpDir, "missing-headroom.exe"),
+          stateRoot: path.join(tmpDir, "state")
+        }
+      }),
+      "utf8"
+    );
+
+    const result = runCli(["headroom", "doctor", "--json", "--config", configPath], tmpDir);
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.status, "not-installed");
+    assert.equal(payload.installed, false);
+    assert.equal(payload.memoryScope, "project");
+    assert.match(payload.workspaceId, /headroom-cli/i);
+  });
+
+  it("starts, reuses, and stops a router-managed Headroom proxy", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-headroom-cli-"));
+    const fakeHeadroomPath = path.join(tmpDir, "fake-headroom.cjs");
+    const claudeConfigDir = path.join(tmpDir, "claude-config");
+    const configPath = path.join(tmpDir, "agent-router.config.json");
+    fs.mkdirSync(claudeConfigDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(claudeConfigDir, "settings.json"),
+      JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: "http://127.0.0.1:15721",
+          ANTHROPIC_AUTH_TOKEN: "local-gateway-token"
+        }
+      }),
+      "utf8"
+    );
+    fs.writeFileSync(
+      fakeHeadroomPath,
+      [
+        "const http = require('node:http');",
+        "const args = process.argv.slice(2);",
+        "const port = Number(args[args.indexOf('--port') + 1]);",
+        "const upstream = args[args.indexOf('--anthropic-api-url') + 1];",
+        "http.createServer((req, res) => {",
+        "  res.setHeader('content-type', 'application/json');",
+        "  if (req.url === '/health') return res.end(JSON.stringify({ status: 'healthy', config: { anthropic_api_url: upstream } }));",
+        "  if (req.url === '/stats-history') return res.end(JSON.stringify({ lifetime: { requests: 3, total_input_tokens: 200, tokens_saved: 50 } }));",
+        "  if (req.url === '/stats') return res.end(JSON.stringify({ stats: { total_requests: 3, tokens_input: 200, tokens_saved: 50 } }));",
+        "  res.statusCode = 404; res.end('{}');",
+        "}).listen(port, '127.0.0.1');"
+      ].join("\n"),
+      "utf8"
+    );
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        headroom: {
+          mode: "required",
+          command: process.execPath,
+          commandArgs: [fakeHeadroomPath],
+          stateRoot: path.join(tmpDir, "state"),
+          startupTimeoutMs: 5000,
+          portRangeStart: 20300,
+          portRangeSize: 100
+        }
+      }),
+      "utf8"
+    );
+
+    const cliEnv = { CLAUDE_CONFIG_DIR: claudeConfigDir };
+    const start = runCli(["headroom", "start", "--json", "--config", configPath], tmpDir, {
+      env: cliEnv
+    });
+    assert.equal(start.status, 0, start.stderr);
+    assert.equal(JSON.parse(start.stdout).status, "started");
+    assert.equal(JSON.parse(start.stdout).upstreamUrl, "http://127.0.0.1:15721");
+
+    const reused = runCli(["headroom", "start", "--json", "--config", configPath], tmpDir, {
+      env: cliEnv
+    });
+    assert.equal(reused.status, 0, reused.stderr);
+    assert.equal(JSON.parse(reused.stdout).status, "reused");
+
+    const stats = runCli(["headroom", "stats", "--json", "--config", configPath], tmpDir);
+    assert.equal(stats.status, 0, stats.stderr);
+    assert.equal(JSON.parse(stats.stdout).tokensSaved, 50);
+
+    const stop = runCli(["headroom", "stop", "--json", "--config", configPath], tmpDir);
+    assert.equal(stop.status, 0, stop.stderr);
+    assert.equal(JSON.parse(stop.stdout).status, "stopped");
+  });
+
   it("shows a MiniMax hint in doctor text output when claude-minimax is missing env", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-cli-"));
     const configPath = path.join(tmpDir, "agent-router.config.json");
@@ -271,7 +368,7 @@ function writeConfig(tmpDir) {
 }
 
 function runCli(args, cwd, options = {}) {
-  const env = { ...process.env };
+  const env = { ...process.env, ...(options.env || {}) };
   if (options.clearMiniMaxEnv) {
     delete env.MINIMAX_API_KEY;
     delete env.MINIMAX_SUBSCRIPTION_KEY;

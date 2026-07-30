@@ -301,7 +301,8 @@ describe("usage estimates", () => {
         durationMs: 100,
         inputTokens: 1000,
         outputTokens: 500,
-        estimatedCost: 0.003
+        estimatedCost: 0.003,
+        headroom: { enabled: true, tokensSaved: 75 }
       },
       {
         status: "error",
@@ -324,11 +325,46 @@ describe("usage estimates", () => {
     assert.equal(summary.byAgent.pi.runs, 1);
     assert.equal(summary.byAgent.claude.status.error, 1);
     assert.equal(summary.byModel["pi::mini"].inputTokens, 1000);
+    assert.equal(summary.headroom.enabledRuns, 1);
+    assert.equal(summary.headroom.tokensSaved, 75);
   });
 }
 );
 
 describe("executeAgent", () => {
+  it("collects a Headroom sidecar without logging credentials", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-headroom-report-"));
+    const logPath = path.join(tmpDir, "runs.jsonl");
+    const config = {
+      headroom: { mode: "auto" },
+      agents: {
+        "claude-minimax": {
+          command: process.execPath,
+          args: [
+            "-e",
+            "const fs=require('fs'); fs.writeFileSync(process.env.AGENT_ROUTER_HEADROOM_REPORT_PATH, JSON.stringify({enabled:true,status:'reused',tokensSaved:42,error:process.env.TEST_REPORT_SECRET})); process.stdout.write('ok')"
+          ],
+          promptMode: "stdin",
+          pricing: { inputPer1k: 0, outputPer1k: 0 }
+        }
+      }
+    };
+
+    const result = executeAgent("hello", config, {
+      agentName: "claude-minimax",
+      model: "test-model",
+      think: "low",
+      logPath,
+      cwd: tmpDir,
+      env: { TEST_REPORT_SECRET: "sk-secret-value" }
+    });
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.headroom.enabled, true);
+    assert.equal(result.headroom.tokensSaved, 42);
+    assert.doesNotMatch(JSON.stringify(loadRuns(logPath)), /sk-secret-value/);
+  });
+
   it("runs an agent through stdin and appends a usage log", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-test-"));
     const logPath = path.join(tmpDir, "runs.jsonl");

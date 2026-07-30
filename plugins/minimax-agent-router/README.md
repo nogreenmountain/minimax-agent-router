@@ -3,7 +3,8 @@
 这个 Codex 插件封装了本地 `agent-router` 链路：
 
 ```text
-Codex -> agent-router -> claude-minimax -> Claude Code CLI -> MiniMax
+Codex -> Task Gate -> Claude Code CLI -> Headroom 本地代理 -> MiniMax
+                              \-> 项目隔离的持久记忆
 ```
 
 ## 分工方式
@@ -19,6 +20,30 @@ MiniMax 的输出不是最终结果，必须由 Codex 检查后再采用。
 插件现在默认先做任务适配判断。高风险、过宽、预计超过 5 分钟、编辑范围不清、代码任务没有准确测试命令、陌生 API 没有示例的任务会直接返回给 Codex，不调用 MiniMax。
 
 `--agent claude-minimax` 不能绕过这个判断。成功执行的结果会标记 `reviewStatus=pending-codex`；超时结果会标记 `status=timed-out` 和 `partialChangesPossible=true`。
+
+## Headroom 压缩和跨 Agent 记忆
+
+插件默认以 `auto` 模式使用 Headroom：已安装时通过本地回环代理压缩重复上下文，并给每个工作区建立独立 SQLite 记忆库；未安装或启动失败时返回 `fallback-direct` 后直连 MiniMax。
+
+默认设置强调质量和隔离：`coding` 压缩配置、最多召回 3 条记忆、不启用输出塑形、不启用自动学习、禁止全局记忆。worker 保存的事实带有 `UNVERIFIED_WORKER` 语义，Codex 必须检查当前代码后才能采用。
+
+为兼容 MiniMax 的 Anthropic 网关，路由器会关闭 Headroom 的 Anthropic 专用 `tool_search`；常规上下文压缩、CCR 和项目记忆不受影响。
+
+首次安装 Headroom：
+
+```cmd
+node .\src\cli.js headroom setup --config .\agent-router.config.json
+node .\src\cli.js headroom doctor --config .\agent-router.config.json
+```
+
+查看当前项目代理和节省统计：
+
+```cmd
+node .\src\cli.js headroom start --config .\agent-router.config.json
+node .\src\cli.js headroom stats --json --config .\agent-router.config.json
+```
+
+单次运行可以使用 `--headroom off` 或 `--headroom required` 覆盖默认模式。
 
 ## 设置 MiniMax Key
 

@@ -1,5 +1,18 @@
 {
   "logPath": ".agent-router/runs.jsonl",
+  "headroom": {
+    "mode": "auto",
+    "host": "127.0.0.1",
+    "upstreamUrl": "https://api.minimax.io/anthropic",
+    "memoryStorage": "project",
+    "memoryTopK": 3,
+    "savingsProfile": "coding",
+    "startupTimeoutMs": 120000,
+    "portRangeStart": 18787,
+    "portRangeSize": 1000,
+    "telemetry": false,
+    "packageSpec": "headroom-ai[proxy]==0.33.0"
+  },
   "defaults": {
     "agent": "claude-minimax",
     "think": "low",

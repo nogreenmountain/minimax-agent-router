@@ -5,10 +5,27 @@
 整体链路是：
 
 ```text
-Codex -> minimax-agent-router -> claude-minimax wrapper -> Claude Code CLI -> MiniMax
+Codex -> Task Gate -> Claude Code CLI -> Headroom 本地代理 -> MiniMax
+                              \-> 项目隔离的持久记忆
 ```
 
-简单说：Codex 当负责人，MiniMax 当执行助手。
+简单说：Codex 当负责人，MiniMax 当执行助手，Headroom 负责压缩重复上下文并让同一项目的 worker 共享长期记忆。
+
+## v0.4 更新方向：压缩 Token + 项目级跨 Agent 记忆
+
+这一版融合了开源项目 [Headroom](https://github.com/headroomlabs-ai/headroom)：
+
+- Claude Code 不再直接连接 MiniMax，而是优先经过路由器管理的本地 Headroom 代理。
+- Headroom 使用 `coding` 节省配置压缩重复上下文、工具输出和历史信息；插件不启用输出塑形，优先保护交付质量。
+- 每个工作区使用独立 SQLite 记忆库。同一项目的后续 worker 可以召回稳定事实和历史决策，不同项目不能共享记忆。
+- 每次只召回最多 3 条相关记忆，避免“为了记忆又塞回大量 Token”。
+- 路由器会关闭 Headroom 仅适用于 Anthropic 一方接口的 `tool_search`，避免 MiniMax 兼容网关拒绝工具 schema；上下文压缩、CCR 和项目记忆仍保持启用。
+- worker 保存的结论统一视为 `UNVERIFIED_WORKER` 背景信息，必须依据当前代码重新核验。
+- 密钥、凭据、完整日志、临时错误和一次性任务指令禁止写入记忆。
+- `auto` 模式下，Headroom 未安装或启动失败时会明确标记 `fallback-direct`，再直连 MiniMax；需要强制压缩时可使用 `--headroom required`。
+- JSON 结果和 `stats` 会显示 Headroom 是否启用、本次请求数和估算节省 Token；Headroom telemetry 默认关闭。
+
+Headroom 只作为本地代理和记忆层，不会修改全局 Claude Code 配置，也不会取代 Codex 的审查和验收职责。
 
 ## v0.3 更新方向：先判断值不值得派
 
@@ -53,6 +70,7 @@ MiniMax 的输出只当草稿，Codex 需要继续检查 diff、跑测试，再�
 - Node.js，并且 `node` 可以在终端里运行。
 - Claude Code CLI，并且 `claude` 可以在终端里运行。
 - MiniMax Subscription Key。
+- 推荐安装 Python 3.10 或更高版本，用于路由器托管 Headroom。未安装时插件仍可在 `auto` 模式直连 MiniMax。
 
 不要把 MiniMax key 写进配置文件、README 或 Git 记录里，只放环境变量。
 
@@ -83,6 +101,18 @@ minimax-agent-router@nogreenmountain installed, enabled
 ```
 
 安装后建议重启 Codex，这样新任务里才能加载到插件技能。
+
+### 安装 Headroom 运行时
+
+进入插件中的 router 目录，执行一次显式安装。它会创建路由器自己的 Python 虚拟环境，不污染项目环境：
+
+```cmd
+cd plugins\minimax-agent-router\scripts\agent-router
+node .\src\cli.js headroom setup --config .\agent-router.config.json
+node .\src\cli.js headroom doctor --json --config .\agent-router.config.json
+```
+
+插件固定安装经过本版本验证的 `headroom-ai[proxy]==0.33.0`。不会在第一次委派时静默下载大型依赖。
 
 ## 设置 MiniMax Key
 
@@ -135,7 +165,11 @@ node .\src\cli.js run --agent claude-minimax --task "请只回复：hi" --json -
 ```json
 {
   "status": "ok",
-  "stdout": "hi\n"
+  "stdout": "hi\n",
+  "headroom": {
+    "enabled": true,
+    "memoryScope": "project"
+  }
 }
 ```
 
@@ -310,6 +344,21 @@ node .\src\cli.js doctor --config .\agent-router.config.json
 node .\src\cli.js minimax --config .\agent-router.config.json
 ```
 
+检查、启动和查看当前项目的 Headroom：
+
+```cmd
+node .\src\cli.js headroom doctor --config .\agent-router.config.json
+node .\src\cli.js headroom start --config .\agent-router.config.json
+node .\src\cli.js headroom stats --json --config .\agent-router.config.json
+```
+
+正常委派默认使用 `--headroom auto`。临时关闭或要求必须使用 Headroom：
+
+```cmd
+node .\src\cli.js run --headroom off --agent claude-minimax --task-file single-task.json --json --config .\agent-router.config.json
+node .\src\cli.js run --headroom required --agent claude-minimax --task-file single-task.json --json --config .\agent-router.config.json
+```
+
 执行一次委派：
 
 ```cmd
@@ -359,5 +408,8 @@ python path\to\plugin-creator\scripts\validate_plugin.py plugins\minimax-agent-r
 
 - 不要提交任何 API key。
 - 不要把 `MINIMAX_API_KEY` 写进 `agent-router.config.json`。
+- Headroom 代理只绑定 `127.0.0.1`，项目记忆只允许 `project` 隔离模式。
+- Headroom 状态保存在用户目录的 `.agent-router/headroom` 下，不写入项目仓库。
+- worker 记忆只能作为未验证背景；安全、权限、部署和最终验收结论不得依赖它直接决策。
 - 委派给 MiniMax 的任务内容和相关代码上下文可能会发送到 MiniMax。
 - 涉及认证、权限、审计、数据库、部署、生产数据的任务，默认留给 Codex 做。
