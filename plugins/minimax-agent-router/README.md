@@ -1,100 +1,104 @@
 # MiniMax Agent Router Plugin
 
-This Codex plugin packages the working `agent-router` flow:
+这个 Codex 插件封装了本地 `agent-router` 链路：
 
 ```text
 Codex -> agent-router -> claude-minimax -> Claude Code CLI -> MiniMax
 ```
 
-## Responsibility Model
+## 分工方式
 
-Codex is the project lead. It owns requirements, planning, architecture, security-sensitive work, review, integration, test selection, final verification, and the final answer to the user.
+Codex 是负责人，负责需求、计划、架构、安全、代码审查、集成测试、最终验证和最终回复。
 
-Claude Code + MiniMax is the execution assistant. It can handle focused tests, small bug fixes, documentation edits, lint/type fixes, formatting, mechanical refactors, and small helper/component edits with narrow scope.
+Claude Code + MiniMax 是执行助手，适合处理边界明确的小任务：补测试、小 bug、文档、lint/type 修复、格式化、机械重构、小 helper 或小组件。
 
-Delegated output is never final until Codex reviews it.
+MiniMax 的输出不是最终结果，必须由 Codex 检查后再采用。
 
-## Setup
+## 设置 MiniMax Key
 
-In `cmd.exe`:
+CMD 当前窗口：
 
 ```cmd
-set MINIMAX_API_KEY=<your MiniMax Subscription Key>
+set MINIMAX_API_KEY=<你的MiniMaxKey>
 ```
 
-In PowerShell:
+PowerShell 当前窗口：
 
 ```powershell
-$env:MINIMAX_API_KEY="<your MiniMax Subscription Key>"
+$env:MINIMAX_API_KEY="<你的MiniMaxKey>"
 ```
 
-For persistent Windows user-level setup:
+Windows 用户级环境变量：
 
 ```powershell
-[Environment]::SetEnvironmentVariable("MINIMAX_API_KEY", "<your MiniMax Subscription Key>", "User")
+[Environment]::SetEnvironmentVariable("MINIMAX_API_KEY", "<你的MiniMaxKey>", "User")
 ```
 
-`MINIMAX_SUBSCRIPTION_KEY` is also accepted.
+也支持：
 
-Never write the key into `agent-router.config.json`.
+```text
+MINIMAX_SUBSCRIPTION_KEY
+```
 
-## Commands
+不要把 key 写进 `agent-router.config.json`。
 
-From a cloned source tree:
+## 常用命令
+
+进入 router 目录：
 
 ```cmd
 cd plugins\minimax-agent-router\scripts\agent-router
 ```
 
-Check readiness:
+检查是否可用：
 
 ```cmd
 node .\src\cli.js doctor --config .\agent-router.config.json
 ```
 
-Show MiniMax help:
+查看 MiniMax 配置帮助：
 
 ```cmd
 node .\src\cli.js minimax --config .\agent-router.config.json
 ```
 
-Run a smoke test:
+烟测：
 
 ```cmd
 node .\src\cli.js run --agent claude-minimax --task "请只回复：MiniMax Claude Code OK" --json --config .\agent-router.config.json
 ```
 
-Run a real delegated task:
+真实委派任务：
 
 ```cmd
-node .\src\cli.js run --agent claude-minimax --task "Workspace: C:\absolute\path\to\repo
-Task: <specific task>
-Scope: <allowed files>
-Constraints: preserve style; do not run destructive git commands; do not touch secrets.
-Output: changed files, tests run, remaining issues." --json --config .\agent-router.config.json
+node .\src\cli.js run --agent claude-minimax --task "Workspace: C:\你的项目绝对路径
+Task: <具体任务>
+Scope: <允许修改的文件或目录>
+Constraints: 保持现有风格；不要运行破坏性 git 命令；不要碰密钥。
+Output: 总结改了哪些文件、跑了哪些测试、还有什么问题。" --json --config .\agent-router.config.json
 ```
 
-View usage:
+查看统计：
 
 ```cmd
 node .\src\cli.js stats --config .\agent-router.config.json
 ```
 
-Start monitor:
+启动监控页：
 
 ```cmd
 node .\src\cli.js monitor --port 8787 --config .\agent-router.config.json
 ```
 
-Then open:
+浏览器打开：
 
 ```text
 http://127.0.0.1:8787
 ```
 
-## Verification
+## 验证
 
-From `scripts/agent-router`:
+从 `scripts/agent-router` 目录运行：
 
 ```cmd
 npm test
