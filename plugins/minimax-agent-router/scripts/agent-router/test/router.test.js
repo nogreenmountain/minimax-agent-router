@@ -5,11 +5,15 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 import {
+  assessTask,
   chooseRoute,
+  DEFAULT_CONFIG,
   estimateCost,
   estimateTokens,
-  executeManyTasks,
   executeAgent,
+  executeAgentAsync,
+  executeManyTasks,
+  formatManyTaskPrompt,
   isCommandAvailable,
   loadConfig,
   loadRuns,
@@ -44,7 +48,12 @@ describe("chooseRoute", () => {
   });
 
   it("uses the first available lightweight agent for ordinary tasks", () => {
-    const route = chooseRoute("实现一个登录按钮组件", config, {
+    const route = chooseRoute({
+      kind: "small-code",
+      task: "修复登录按钮的禁用状态。",
+      scope: ["src/login-button.tsx"],
+      testCommand: "npm test -- login-button"
+    }, config, {
       isCommandAvailable: (command) => command === "pi"
     });
 
@@ -55,7 +64,12 @@ describe("chooseRoute", () => {
   });
 
   it("falls back when the preferred agent command is unavailable", () => {
-    const route = chooseRoute("补一个表单校验函数", config, {
+    const route = chooseRoute({
+      kind: "small-code",
+      task: "补一个表单校验函数。",
+      scope: ["src/validate-form.ts"],
+      testCommand: "npm test -- validate-form"
+    }, config, {
       isCommandAvailable: (command) => command === "claude"
     });
 
@@ -63,7 +77,11 @@ describe("chooseRoute", () => {
   });
 
   it("falls back when an agent is missing one of its required environment variables", () => {
-    const route = chooseRoute("实现一个登录按钮组件", {
+    const route = chooseRoute({
+      kind: "docs",
+      task: "整理登录按钮说明。",
+      scope: ["README.md"]
+    }, {
       defaults: { agent: "claude-minimax", think: "low" },
       agents: {
         "claude-minimax": {
@@ -85,7 +103,11 @@ describe("chooseRoute", () => {
   });
 
   it("uses an env-gated agent when any required environment variable is present", () => {
-    const route = chooseRoute("实现一个登录按钮组件", {
+    const route = chooseRoute({
+      kind: "docs",
+      task: "整理登录按钮说明。",
+      scope: ["README.md"]
+    }, {
       defaults: { agent: "claude-minimax", think: "low" },
       agents: {
         "claude-minimax": {
@@ -108,7 +130,12 @@ describe("chooseRoute", () => {
   });
 
   it("honors explicit agent, model, and thinking strength overrides", () => {
-    const route = chooseRoute("补一个表单校验函数", config, {
+    const route = chooseRoute({
+      kind: "small-code",
+      task: "补一个表单校验函数。",
+      scope: ["src/validate-form.ts"],
+      testCommand: "npm test -- validate-form"
+    }, config, {
       agentName: "claude",
       model: "opus",
       think: "high",
@@ -118,6 +145,91 @@ describe("chooseRoute", () => {
     assert.equal(route.agentName, "claude");
     assert.equal(route.model, "opus");
     assert.equal(route.think, "high");
+  });
+
+  it("does not let an explicit agent override the safety gate", () => {
+    const route = chooseRoute("用 Windows COM 重写 PowerPoint 自动化核心模块", config, {
+      agentName: "pi",
+      isCommandAvailable: () => true
+    });
+
+    assert.equal(route.runByCodex, true);
+    assert.equal(route.agentName, "codex");
+    assert.equal(route.assessment.decision, "codex");
+    assert.match(route.reason, /platform integration/i);
+  });
+});
+
+describe("assessTask", () => {
+  it("defaults the execution budget to five minutes", () => {
+    assert.equal(DEFAULT_CONFIG.defaults.timeoutMs, 300000);
+  });
+
+  it("accepts a narrow task with an exact test command", () => {
+    const assessment = assessTask({
+      kind: "small-code",
+      task: "修复日期格式化边界条件。",
+      scope: ["src/date-format.ts", "test/date-format.test.ts"],
+      testCommand: "npm test -- date-format",
+      estimatedMinutes: 4
+    }, DEFAULT_CONFIG);
+
+    assert.equal(assessment.decision, "delegate");
+    assert.equal(assessment.fit, "good");
+    assert.ok(assessment.score >= 70);
+  });
+
+  it("keeps broad editing tasks without a scope on Codex", () => {
+    const assessment = assessTask({
+      kind: "small-code",
+      task: "实现完整的登录功能。",
+      testCommand: "npm test"
+    }, DEFAULT_CONFIG);
+
+    assert.equal(assessment.decision, "codex");
+    assert.match(assessment.reasons.join(" "), /scope/i);
+  });
+
+  it("requires an exact API example for unfamiliar API implementation", () => {
+    const assessment = assessTask({
+      kind: "small-code",
+      task: "使用新的 PPTX API 实现幻灯片导出。",
+      scope: ["src/export-slide.ts"],
+      testCommand: "npm test -- export-slide"
+    }, DEFAULT_CONFIG);
+
+    assert.equal(assessment.decision, "codex");
+    assert.match(assessment.reasons.join(" "), /API example/i);
+  });
+
+  it("accepts bounded read-only research without a test command", () => {
+    const assessment = assessTask({
+      kind: "research",
+      readOnly: true,
+      task: "比较现有仓库中两种日志方案，只输出证据和建议。",
+      scope: ["src/logging/**"],
+      estimatedMinutes: 3
+    }, DEFAULT_CONFIG);
+
+    assert.equal(assessment.decision, "delegate");
+  });
+});
+
+describe("formatManyTaskPrompt", () => {
+  it("adds strict scope, no-scratch, test, evidence, and review guardrails", () => {
+    const prompt = formatManyTaskPrompt({
+      kind: "small-code",
+      task: "修复一个边界条件。",
+      scope: ["src/foo.ts", "test/foo.test.ts"],
+      testCommand: "npm test -- foo",
+      apiExamples: ["client.render({ blob, position })"]
+    });
+
+    assert.match(prompt, /Do not create scratch, temp, or helper files outside Scope/);
+    assert.match(prompt, /npm test -- foo/);
+    assert.match(prompt, /client\.render\(\{ blob, position \}\)/);
+    assert.match(prompt, /Paste the real command output/);
+    assert.match(prompt, /Codex will inspect the diff and verify the result/);
   });
 });
 
@@ -308,6 +420,34 @@ describe("executeAgent", () => {
   });
 });
 
+describe("executeAgentAsync", () => {
+  it("marks timed-out work as possibly partial", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-timeout-"));
+    const config = {
+      defaults: { timeoutMs: 20 },
+      agents: {
+        nodeDelay: {
+          command: process.execPath,
+          args: ["-e", "setTimeout(() => process.stdout.write('late'), 500)"],
+          promptMode: "stdin",
+          pricing: { inputPer1k: 0, outputPer1k: 0 }
+        }
+      }
+    };
+
+    const result = await executeAgentAsync("hello", config, {
+      agentName: "nodeDelay",
+      model: "test-model",
+      think: "low",
+      cwd: tmpDir
+    });
+
+    assert.equal(result.status, "timed-out");
+    assert.equal(result.partialChangesPossible, true);
+    assert.equal(result.reviewStatus, "required");
+  });
+});
+
 describe("executeManyTasks", () => {
   it("runs independent tasks with a concurrency limit and preserves result order", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-many-"));
@@ -332,18 +472,28 @@ describe("executeManyTasks", () => {
     };
 
     const started = performance.now();
-    const result = await executeManyTasks(["one", "two", "three"], config, {
+    const events = [];
+    const result = await executeManyTasks([
+      { id: "one", kind: "research", readOnly: true, task: "analyze one", scope: ["src/one.ts"] },
+      { id: "two", kind: "research", readOnly: true, task: "analyze two", scope: ["src/two.ts"] },
+      { id: "three", kind: "research", readOnly: true, task: "analyze three", scope: ["src/three.ts"] }
+    ], config, {
       parallel: 3,
       logPath,
       cwd: tmpDir,
-      isCommandAvailable: () => true
+      isCommandAvailable: () => true,
+      onEvent: (event) => events.push(event)
     });
     const elapsed = performance.now() - started;
 
     assert.equal(result.status, "ok");
     assert.equal(result.summary.totalTasks, 3);
     assert.equal(result.summary.okTasks, 3);
-    assert.deepEqual(result.results.map((entry) => entry.stdout), ["done:one", "done:two", "done:three"]);
+    assert.equal(result.summary.pendingReviewTasks, 3);
+    assert.deepEqual(result.results.map((entry) => entry.reviewStatus), ["pending-codex", "pending-codex", "pending-codex"]);
+    assert.deepEqual(result.results.map((entry) => entry.stdout), ["done:" + formatManyTaskPrompt({ id: "one", kind: "research", readOnly: true, task: "analyze one", scope: ["src/one.ts"] }), "done:" + formatManyTaskPrompt({ id: "two", kind: "research", readOnly: true, task: "analyze two", scope: ["src/two.ts"] }), "done:" + formatManyTaskPrompt({ id: "three", kind: "research", readOnly: true, task: "analyze three", scope: ["src/three.ts"] })]);
+    assert.equal(events.filter((event) => event.type === "task-started").length, 3);
+    assert.equal(events.filter((event) => event.type === "task-finished").length, 3);
     assert.ok(elapsed < 650, `expected parallel execution, took ${elapsed}ms`);
     assert.equal(loadRuns(logPath).length, 3);
   });
@@ -365,7 +515,10 @@ describe("executeManyTasks", () => {
       }
     };
 
-    const result = await executeManyTasks(["planning: decide architecture", "write docs"], config, {
+    const result = await executeManyTasks([
+      { id: "architecture", task: "planning: decide architecture" },
+      { id: "docs", kind: "docs", task: "write docs", scope: ["README.md"] }
+    ], config, {
       parallel: 2,
       cwd: tmpDir,
       isCommandAvailable: () => true

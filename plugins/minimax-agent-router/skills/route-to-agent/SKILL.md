@@ -1,66 +1,95 @@
 ---
 name: route-to-agent
-description: Route scoped coding chores from Codex to Claude Code CLI backed by MiniMax through the plugin-bundled agent-router. Use when the user wants Codex to supervise Claude Code, use MiniMax token-plan quota, choose model/effort, or monitor delegated work. Keep Codex responsible for planning, architecture, security, review, deployments, and final verification.
+description: Assess and route only well-fitted, scoped chores from Codex to Claude Code CLI backed by MiniMax through the plugin-bundled agent-router. Use when the user wants Codex to supervise Claude Code, use MiniMax token-plan quota, run independent low-cost workers, choose model/effort, or monitor delegated work. Keep Codex responsible for architecture, unfamiliar APIs, platform integration, security, review, deployments, and final verification.
 ---
 
 # Route To Agent
 
-Use this plugin when Codex should act as the project lead and delegate safe, bounded implementation chores to Claude Code CLI running through MiniMax.
-
-The intended chain is:
+Use this plugin as a guarded junior-to-mid-level worker pool:
 
 ```text
-Codex -> minimax-agent-router -> claude-minimax wrapper -> Claude Code CLI -> MiniMax Anthropic-compatible API
+Codex lead -> task-fit gate -> agent-router -> Claude Code CLI -> MiniMax
 ```
 
-## Responsibility Split
+MiniMax output is a draft. A successful process exit means only `reviewStatus=pending-codex`; it never means the task is verified.
 
-Codex must handle:
+## Mandatory Routing Flow
 
-- Requirements, ambiguity, planning, architecture, and product judgment.
-- Security, secrets, authentication, permissions, audit, database migrations, deployment, and rollback decisions.
-- Code review, integration decisions, final testing, and the final user-facing answer.
-- Any task where the allowed files, expected behavior, or risk boundary is unclear.
+1. Classify the task before invoking MiniMax.
+2. Keep architecture, cross-module contracts, unfamiliar APIs, Windows COM/Office automation, security, permissions, secrets, database migrations, deployment, release, and final acceptance with Codex.
+3. Split suitable work into one file, one source/test pair, or one clear directory.
+4. Target 3-5 minutes per worker. The default hard budget is 300000 ms.
+5. Run `route` with the complete delegation prompt.
+6. Invoke `run` or `run-many` only when the route returns `assessment.decision=delegate`.
+7. Inspect every changed file and rerun verification as Codex.
 
-Delegate a single task to `claude-minimax` only for:
+Do not bypass a Codex decision by specifying `--agent`. The safety gate still owns the decision.
 
-- Focused unit tests, documentation edits, small bug fixes, lint/type fixes, mechanical refactors, and small components.
-- Work with a narrow file or directory scope and a clear success condition.
-- Draft implementation work that Codex will inspect before accepting.
+## Suitable Tasks
 
-Use bounded parallel MiniMax workers only when there are 2 or more independent chores whose allowed files do not overlap. Good parallel batches include:
+Delegate bounded drafts for:
 
-- Backend tests in one directory, documentation in another directory, and frontend lint fixes in a third directory.
-- Read-only analysis tasks that produce recommendations without editing files.
-- Mechanical updates where each task has a separate scope and clear output.
+- Independent technical research or option comparison with evidence.
+- README, operating instructions, and documentation cleanup.
+- Test case skeletons and focused unit tests.
+- A single file, small component, helper, or mechanical edit using established project APIs.
+- Repetitive implementations behind an existing interface.
+- Read-only code review or analysis that Codex will verify.
 
-Do not use parallel workers for shared files, database migrations, auth/permission/security work, production deployment, unclear requirements, or broad refactors. Codex must split the tasks, set non-overlapping scopes, review every result, resolve conflicts, and run final verification.
+Use parallel workers only for independent tasks with non-overlapping scopes. Research and documentation are good parallel candidates. Core implementation should normally be split into sequential phases.
 
-Never treat delegated output as final. Codex must inspect the result, read the diff, run relevant tests, and decide whether to accept, revise, or discard it.
+## Unsuitable Tasks
 
-## Required Setup
+Keep these with Codex:
 
-Set a MiniMax token-plan key in the user's current shell session. In `cmd.exe`:
+- New framework or unfamiliar API architecture without verified examples.
+- Windows COM, Office, PowerPoint, shell/encoding, or other fragile platform integration.
+- Large multi-module implementations or shared interface changes.
+- Security, auth, permissions, secrets, audit, migrations, production data, deployment, rollback, and release.
+- Final review, acceptance, publication, or claims that work is complete.
+- Work where strict file ownership cannot be stated confidently.
 
-```cmd
-set MINIMAX_API_KEY=<your MiniMax Subscription Key>
+## Structured Task Contract
+
+Prefer a structured task object:
+
+```json
+{
+  "id": "date-format-fix",
+  "kind": "small-code",
+  "workspace": "C:\\absolute\\project",
+  "task": "Fix the known date-format boundary condition.",
+  "scope": [
+    "src/date-format.ts",
+    "test/date-format.test.ts"
+  ],
+  "testCommand": "npm test -- date-format",
+  "estimatedMinutes": 4,
+  "apiExamples": [
+    "formatDate(value, { timeZone: 'UTC' })"
+  ],
+  "constraints": [
+    "Preserve existing style."
+  ]
+}
 ```
 
-In PowerShell:
+Use `kind=research` plus `readOnly=true` for analysis that must not edit files. For unfamiliar third-party APIs, include a verified call in `apiExamples`; otherwise keep implementation with Codex.
 
-```powershell
-$env:MINIMAX_API_KEY="<your MiniMax Subscription Key>"
-```
+The router automatically adds these prompt guardrails:
 
-`MINIMAX_SUBSCRIPTION_KEY` is also accepted. Do not write keys into config files.
+- Modify only `scope`.
+- Create no scratch, temp, or helper files outside `scope`.
+- Do not expand into new modules.
+- Run the exact `testCommand` and paste real output.
+- Report uncertainty and partial work.
+- Remind the worker that Codex will inspect and verify the result.
 
-## Router Commands
+Use `assets/single-task.example.json`, `assets/parallel-tasks.example.json`, and `assets/delegated-task-template.md` as reusable templates.
 
-The plugin-bundled router lives under this plugin's `scripts/agent-router` directory. When Codex loads the skill, use the `SKILL.md` source locator to find the plugin root, then go to:
+## Commands
 
-```text
-<plugin-root>\scripts\agent-router
-```
+Find `<plugin-root>` from this `SKILL.md` path, then use `<plugin-root>\scripts\agent-router`.
 
 Check readiness:
 
@@ -68,74 +97,37 @@ Check readiness:
 node "<plugin-root>\scripts\agent-router\src\cli.js" doctor --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
 ```
 
-Show MiniMax setup help:
+Preflight a task without spending MiniMax quota:
 
 ```powershell
-node "<plugin-root>\scripts\agent-router\src\cli.js" minimax --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
+node "<plugin-root>\scripts\agent-router\src\cli.js" route --task-file "<task.json>" --json --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
 ```
 
-Route a task:
+Run one accepted task:
 
 ```powershell
-node "<plugin-root>\scripts\agent-router\src\cli.js" route --task "<task summary>" --json --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
+node "<plugin-root>\scripts\agent-router\src\cli.js" run --agent claude-minimax --model "MiniMax-M3[1m]" --think low --task-file "<task.json>" --json --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
 ```
 
-Run delegated work:
-
-```powershell
-node "<plugin-root>\scripts\agent-router\src\cli.js" run --agent claude-minimax --model "MiniMax-M3[1m]" --think low --task "<delegation prompt>" --json --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
-```
-
-Run independent tasks in a bounded parallel worker pool:
+Run an accepted independent batch:
 
 ```powershell
 node "<plugin-root>\scripts\agent-router\src\cli.js" run-many --tasks "<tasks.json>" --parallel 3 --agent claude-minimax --model "MiniMax-M3[1m]" --think low --json --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
 ```
 
-The `tasks.json` file can be either an array or an object with a `tasks` array. Each task may use `prompt` for raw prompt text, or `task` plus optional `workspace`, `scope`, `constraints`, and `output` fields for a structured delegation prompt. Use `assets/parallel-tasks.example.json` as the reference shape.
+`run-many` emits worker start and finish events to stderr while preserving final JSON on stdout. Use `--quiet` only when progress output is undesirable.
 
-Open monitoring:
+## Timeout Recovery
 
-```powershell
-node "<plugin-root>\scripts\agent-router\src\cli.js" monitor --port 8787 --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
-```
+When a worker returns `status=timed-out` or `partialChangesPossible=true`:
 
-## Delegation Prompt Template
+1. Stop further delegation in the same scope.
+2. Inspect `git status` and the diff because partial files may remain.
+3. Decide whether to keep, repair, or discard the partial work.
+4. Split the remaining work into a smaller task before retrying.
 
-Always give Claude Code a narrow prompt:
+## Final Verification
 
-```text
-Workspace: <absolute path>
+Codex must inspect stdout/stderr, review the diff, check for scope violations and invented APIs, run the exact test independently, perform platform or UI checks where relevant, and make the final acceptance decision.
 
-Task:
-<one specific task>
-
-Scope:
-<allowed files or directories>
-
-Constraints:
-- Preserve existing style.
-- Do not run destructive git commands.
-- Do not modify secrets, credentials, production deploy files, or unrelated modules.
-- Do not expand the task scope.
-- If unsure, stop and explain.
-
-Output:
-- Changed files
-- Tests run
-- Remaining issues
-```
-
-Use `low` effort for mechanical edits, `medium` for ordinary small bug fixes, and `high` only for bounded work that still needs deeper reasoning.
-
-## After Delegation
-
-Codex must:
-
-1. Inspect stdout and stderr.
-2. For `run-many`, inspect every worker result and note any `status=codex` task that was intentionally kept out of the worker pool.
-3. Review changed files or `git diff`.
-4. Check for scope creep, overlap, conflicts, or risky edits.
-5. Run relevant tests/builds.
-6. Fix minor integration issues directly or re-delegate with a narrower prompt.
-7. Give the final answer only after verification.
+Set `MINIMAX_API_KEY` or `MINIMAX_SUBSCRIPTION_KEY` in the environment only. Never write keys into repository files.

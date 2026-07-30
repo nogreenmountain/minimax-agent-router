@@ -8,22 +8,62 @@ export const DEFAULT_CONFIG = {
   defaults: {
     agent: "claude-minimax",
     think: "low",
-    timeoutMs: 600000
+    timeoutMs: 300000
   },
   routing: {
     codexKeywords: [
       "规划",
       "计划",
       "架构",
-      "review",
-      "code review",
-      "审查",
       "生图",
       "画图",
       "image",
       "高风险",
-      "安全"
+      "安全",
+      "权限",
+      "密钥",
+      "审计",
+      "数据库迁移",
+      "部署",
+      "上线",
+      "生产",
+      "回滚"
     ],
+    taskGate: {
+      enabled: true,
+      maxEstimatedMinutes: 5,
+      maxScopeEntries: 2,
+      platformIntegrationKeywords: [
+        "windows com",
+        "powerpoint com",
+        "office com",
+        "office automation",
+        "office 自动化",
+        "com 自动化"
+      ],
+      broadTaskKeywords: [
+        "完整实现",
+        "全量实现",
+        "大范围重构",
+        "重构整个",
+        "多模块",
+        "多个模块",
+        "共享接口",
+        "核心模块",
+        "end-to-end implementation",
+        "large refactor"
+      ],
+      unfamiliarApiKeywords: [
+        "陌生 api",
+        "新的 api",
+        "新 api",
+        "pptx api",
+        "third-party api",
+        "第三方 api",
+        "new sdk",
+        "新的 sdk"
+      ]
+    },
     preferredAgentOrder: ["claude-minimax", "pi", "claude", "hermes"]
   },
   agents: {
@@ -104,18 +144,15 @@ export function getLogPath(config, cwd = process.cwd()) {
 }
 
 export function chooseRoute(task, config, options = {}) {
-  const text = String(task || "");
-  const lower = text.toLowerCase();
-  const keywords = config.routing?.codexKeywords || [];
-  const matchedKeyword = keywords.find((keyword) => lower.includes(String(keyword).toLowerCase()));
-
-  if (!options.agentName && matchedKeyword) {
+  const assessment = assessTask(task, config);
+  if (assessment.decision === "codex") {
     return {
       runByCodex: true,
       agentName: "codex",
       model: null,
       think: null,
-      reason: `matched Codex-owned keyword: ${matchedKeyword}`
+      reason: assessment.reasons.join("; "),
+      assessment
     };
   }
 
@@ -130,7 +167,114 @@ export function chooseRoute(task, config, options = {}) {
     agentName,
     model: options.model || agent.defaultModel || config.defaults?.model || "auto",
     think: options.think || agent.defaultThink || config.defaults?.think || "low",
-    reason: options.agentName ? "explicit agent override" : "first available configured agent"
+    reason: options.agentName ? "explicit agent selected after safety gate" : "task passed safety gate",
+    assessment
+  };
+}
+
+export function assessTask(task, config = DEFAULT_CONFIG) {
+  const descriptor = normalizeTaskDescriptor(task);
+  const gate = deepMerge(DEFAULT_CONFIG.routing.taskGate, config.routing?.taskGate || {});
+  const lower = descriptor.text.toLowerCase();
+  const reasons = [];
+  const recommendations = [];
+  const signals = [];
+
+  if (gate.enabled === false) {
+    return {
+      decision: "delegate",
+      fit: "unchecked",
+      score: 50,
+      kind: descriptor.kind,
+      readOnly: descriptor.readOnly,
+      reasons: ["task gate disabled by configuration"],
+      recommendations,
+      signals
+    };
+  }
+
+  const platformKeyword = findKeyword(lower, gate.platformIntegrationKeywords);
+  if (platformKeyword) {
+    reasons.push(`platform integration must stay with Codex: ${platformKeyword}`);
+    signals.push("platform-integration");
+  }
+
+  const codexKeyword = findKeyword(lower, config.routing?.codexKeywords || DEFAULT_CONFIG.routing.codexKeywords);
+  if (codexKeyword) {
+    reasons.push(`matched Codex-owned keyword: ${codexKeyword}`);
+    signals.push("codex-owned");
+  }
+
+  const broadKeyword = findKeyword(lower, gate.broadTaskKeywords);
+  if (broadKeyword) {
+    reasons.push(`task is too broad for a short MiniMax worker: ${broadKeyword}`);
+    signals.push("broad-task");
+  }
+
+  if (descriptor.estimatedMinutes && descriptor.estimatedMinutes > gate.maxEstimatedMinutes) {
+    reasons.push(`estimated task time exceeds ${gate.maxEstimatedMinutes} minutes`);
+    signals.push("over-budget");
+  }
+
+  if (descriptor.editing && descriptor.scope.length === 0) {
+    reasons.push("editing tasks require an explicit file or directory scope");
+    recommendations.push("Provide one file, one test pair, or one clear directory in Scope.");
+    signals.push("missing-scope");
+  }
+
+  if (descriptor.scope.length > gate.maxScopeEntries) {
+    reasons.push(`scope has ${descriptor.scope.length} entries; maximum is ${gate.maxScopeEntries}`);
+    recommendations.push("Split the work into smaller non-overlapping tasks.");
+    signals.push("wide-scope");
+  }
+
+  if (descriptor.requiresTest && !descriptor.testCommand) {
+    reasons.push("code and test tasks require one exact test command");
+    recommendations.push("Add testCommand and require the real command output.");
+    signals.push("missing-test-command");
+  }
+
+  const unfamiliarApiKeyword = findKeyword(lower, gate.unfamiliarApiKeywords);
+  if (unfamiliarApiKeyword && descriptor.apiExamples.length === 0) {
+    reasons.push(`unfamiliar API implementation requires an exact API example: ${unfamiliarApiKeyword}`);
+    recommendations.push("Provide a verified API call or keep the implementation with Codex.");
+    signals.push("missing-api-example");
+  }
+
+  let score = 45;
+  if (["research", "docs", "tests", "small-code", "mechanical", "review"].includes(descriptor.kind)) {
+    score += 15;
+  }
+  if (descriptor.readOnly) {
+    score += 15;
+  }
+  if (descriptor.scope.length > 0) {
+    score += 15;
+  }
+  if (!descriptor.requiresTest || descriptor.testCommand) {
+    score += 10;
+  }
+  if (descriptor.estimatedMinutes && descriptor.estimatedMinutes <= gate.maxEstimatedMinutes) {
+    score += 5;
+  }
+  if (descriptor.apiExamples.length > 0) {
+    score += 5;
+  }
+  score = Math.max(0, Math.min(100, score - reasons.length * 25));
+
+  const decision = reasons.length === 0 ? "delegate" : "codex";
+  return {
+    decision,
+    fit: decision === "delegate" && score >= 70 ? "good" : "poor",
+    score,
+    kind: descriptor.kind,
+    readOnly: descriptor.readOnly,
+    editing: descriptor.editing,
+    scope: descriptor.scope,
+    estimatedMinutes: descriptor.estimatedMinutes,
+    reasons: reasons.length > 0 ? reasons : ["bounded task passed the MiniMax task gate"],
+    recommendations,
+    signals
   };
 }
 
@@ -255,7 +399,8 @@ export function executeAgent(prompt, config, options = {}) {
   const stderr = result.stderr || "";
   const inputTokens = estimateTokens(promptText);
   const outputTokens = estimateTokens(stdout);
-  const status = result.status === 0 && !result.error ? "ok" : "error";
+  const timedOut = result.error?.code === "ETIMEDOUT";
+  const status = timedOut ? "timed-out" : result.status === 0 && !result.error ? "ok" : "error";
   const run = {
     id: makeRunId(startedAt),
     startedAt: startedAt.toISOString(),
@@ -271,6 +416,8 @@ export function executeAgent(prompt, config, options = {}) {
     exitCode: result.status,
     signal: result.signal,
     error: result.error ? result.error.message : null,
+    reviewStatus: status === "ok" ? "pending-codex" : "required",
+    partialChangesPossible: timedOut,
     stdoutChars: stdout.length,
     stderrChars: stderr.length,
     inputTokens,
@@ -356,7 +503,7 @@ export async function executeAgentAsync(prompt, config, options = {}) {
       const durationMs = Math.round(performance.now() - started);
       const inputTokens = estimateTokens(promptText);
       const outputTokens = estimateTokens(stdout);
-      const status = exitCode === 0 && !spawnError && !timedOut ? "ok" : "error";
+      const status = timedOut ? "timed-out" : exitCode === 0 && !spawnError ? "ok" : "error";
       const run = {
         id: makeRunId(startedAt),
         startedAt: startedAt.toISOString(),
@@ -372,6 +519,8 @@ export async function executeAgentAsync(prompt, config, options = {}) {
         exitCode,
         signal,
         error: spawnError ? spawnError.message : timedOut ? `Timed out after ${timeoutMs}ms` : null,
+        reviewStatus: status === "ok" ? "pending-codex" : "required",
+        partialChangesPossible: timedOut,
         stdoutChars: stdout.length,
         stderrChars: stderr.length,
         inputTokens,
@@ -414,7 +563,7 @@ export async function executeManyTasks(tasksInput, config, options = {}) {
 
   async function executeOneTask(task, index) {
     const prompt = formatManyTaskPrompt(task);
-    const route = chooseRoute(prompt, config, {
+    const route = chooseRoute(task, config, {
       agentName: task.agent || options.agentName,
       model: task.model || options.model,
       think: task.think || options.think,
@@ -423,16 +572,22 @@ export async function executeManyTasks(tasksInput, config, options = {}) {
     });
     const taskId = task.id || task.name || `task-${index + 1}`;
 
+    options.onEvent?.({ type: "task-started", taskId, index, at: new Date().toISOString() });
+
     if (route.runByCodex) {
-      return {
+      const result = {
         taskId,
         index,
         status: "codex",
         reason: route.reason,
+        assessment: route.assessment,
         agent: "codex",
+        reviewStatus: "codex-owned",
         stdout: "",
         stderr: ""
       };
+      options.onEvent?.({ type: "task-finished", taskId, index, status: result.status, at: new Date().toISOString() });
+      return result;
     }
 
     const taskCwd = task.workspace || options.cwd || process.cwd();
@@ -443,11 +598,14 @@ export async function executeManyTasks(tasksInput, config, options = {}) {
       timeoutMs: task.timeoutMs || options.timeoutMs
     });
 
-    return {
+    const taskResult = {
       taskId,
       index,
+      assessment: route.assessment,
       ...result
     };
+    options.onEvent?.({ type: "task-finished", taskId, index, status: taskResult.status, at: new Date().toISOString() });
+    return taskResult;
   }
 
   const workerCount = Math.min(parallel, tasks.length);
@@ -456,6 +614,7 @@ export async function executeManyTasks(tasksInput, config, options = {}) {
   const summary = summarizeManyTaskResults(results);
   return {
     status: summary.errorTasks > 0 ? "error" : summary.codexTasks > 0 ? "needs-codex" : "ok",
+    reviewStatus: summary.pendingReviewTasks > 0 ? "pending-codex" : "not-required",
     parallel,
     summary,
     results
@@ -486,24 +645,48 @@ export function formatManyTaskPrompt(task) {
   if (typeof task === "string") {
     return task;
   }
-  if (task.prompt) {
-    return String(task.prompt);
-  }
-
   const lines = [];
   if (task.workspace) {
     lines.push(`Workspace: ${task.workspace}`, "");
   }
-  lines.push("Task:", String(task.task));
+  lines.push("Task:", String(task.task || task.prompt));
+  if (task.kind) {
+    lines.push("", "Task kind:", String(task.kind));
+  }
   if (task.scope) {
     lines.push("", "Scope:", formatTaskField(task.scope));
   }
-  if (task.constraints) {
-    lines.push("", "Constraints:", formatTaskField(task.constraints));
+  if (task.apiExamples) {
+    lines.push("", "Verified API examples:", formatTaskField(task.apiExamples));
   }
-  if (task.output) {
-    lines.push("", "Output:", formatTaskField(task.output));
+  const constraints = [
+    "Only modify files listed in Scope.",
+    "Do not create scratch, temp, or helper files outside Scope.",
+    "Do not expand the task or introduce new modules unless Scope explicitly allows it.",
+    "Do not run destructive git commands.",
+    "If an API call is not covered by the verified examples or existing project usage, stop and report the uncertainty.",
+    ...(task.readOnly ? ["This is read-only work. Do not modify any files."] : []),
+    ...toArray(task.constraints)
+  ];
+  lines.push("", "Constraints:", formatTaskField(constraints));
+  if (task.testCommand) {
+    lines.push(
+      "",
+      "Required verification:",
+      `Run exactly: ${task.testCommand}`,
+      "Paste the real command output. Do not replace it with a completion claim."
+    );
   }
+  lines.push(
+    "",
+    "Output:",
+    formatTaskField(toArray(task.output).length > 0 ? toArray(task.output) : [
+      "Changed files or read-only findings with evidence.",
+      "Exact verification command and real output.",
+      "Remaining uncertainty, scope exceptions, or partial work."
+    ]),
+    "Codex will inspect the diff and verify the result before acceptance."
+  );
   return lines.join("\n");
 }
 
@@ -513,6 +696,8 @@ function summarizeManyTaskResults(results) {
     okTasks: 0,
     errorTasks: 0,
     codexTasks: 0,
+    timedOutTasks: 0,
+    pendingReviewTasks: 0,
     totalDurationMs: 0,
     totalInputTokens: 0,
     totalOutputTokens: 0,
@@ -526,6 +711,12 @@ function summarizeManyTaskResults(results) {
       summary.codexTasks += 1;
     } else {
       summary.errorTasks += 1;
+      if (result.status === "timed-out") {
+        summary.timedOutTasks += 1;
+      }
+    }
+    if (result.reviewStatus === "pending-codex") {
+      summary.pendingReviewTasks += 1;
     }
     summary.totalDurationMs += Number(result.durationMs || 0);
     summary.totalInputTokens += Number(result.inputTokens || 0);
@@ -626,6 +817,68 @@ function formatTaskField(value) {
     return value.map((item) => `- ${item}`).join("\n");
   }
   return String(value);
+}
+
+function normalizeTaskDescriptor(task) {
+  const objectTask = isPlainObject(task) ? task : {};
+  const text = isPlainObject(task)
+    ? String(task.task || task.prompt || "")
+    : String(task || "");
+  const kind = String(objectTask.kind || inferTaskKind(text)).toLowerCase();
+  const readOnly = Boolean(objectTask.readOnly) || ["research", "review", "analysis", "conversation"].includes(kind);
+  const scope = toArray(objectTask.scope || extractTaskSection(text, "scope"));
+  const testCommand = objectTask.testCommand || extractTaskSection(text, "test command") || extractTaskSection(text, "test");
+  const apiExamples = toArray(objectTask.apiExamples || extractTaskSection(text, "api examples"));
+  const estimatedMinutes = Number(objectTask.estimatedMinutes || 0) || null;
+  const requiresTest = ["tests", "small-code", "mechanical", "bug-fix", "component"].includes(kind);
+  return {
+    text,
+    kind,
+    readOnly,
+    editing: !readOnly && kind !== "conversation",
+    scope: scope.filter(Boolean),
+    testCommand: testCommand ? String(testCommand).trim() : "",
+    apiExamples: apiExamples.filter(Boolean),
+    estimatedMinutes,
+    requiresTest
+  };
+}
+
+function inferTaskKind(text) {
+  const lower = String(text || "").toLowerCase();
+  if (/(只回复|reply only|打印一个|print a|print hi)/i.test(lower)) {
+    return "conversation";
+  }
+  if (/(只读|不修改文件|调研|研究|比较|分析)/i.test(lower)) {
+    return "research";
+  }
+  if (/(readme|文档|说明|注释)/i.test(lower)) {
+    return "docs";
+  }
+  if (/(测试|test|spec)/i.test(lower)) {
+    return "tests";
+  }
+  if (/(lint|format|格式化|import|类型错误|type error)/i.test(lower)) {
+    return "mechanical";
+  }
+  return "small-code";
+}
+
+function extractTaskSection(text, label) {
+  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = String(text || "").match(new RegExp(`${escaped}\\s*:\\s*([^\\r\\n]+)`, "i"));
+  return match?.[1]?.trim() || "";
+}
+
+function findKeyword(text, keywords = []) {
+  return keywords.find((keyword) => text.includes(String(keyword).toLowerCase())) || null;
+}
+
+function toArray(value) {
+  if (value === undefined || value === null || value === "") {
+    return [];
+  }
+  return Array.isArray(value) ? value.map(String) : [String(value)];
 }
 
 function isPlainObject(value) {

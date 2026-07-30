@@ -1,0 +1,18 @@
+{
+  "id": "date-format-fix",
+  "kind": "small-code",
+  "workspace": "C:\\absolute\\project",
+  "task": "Fix the known date-format boundary condition.",
+  "scope": [
+    "src/date-format.ts",
+    "test/date-format.test.ts"
+  ],
+  "testCommand": "npm test -- date-format",
+  "estimatedMinutes": 4,
+  "apiExamples": [
+    "formatDate(value, { timeZone: 'UTC' })"
+  ],
+  "constraints": [
+    "Preserve existing style."
+  ]
+}

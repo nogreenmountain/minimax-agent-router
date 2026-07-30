@@ -1,8 +1,8 @@
 {
   "name": "agent-router-center",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Local agent CLI router, parallel worker runner, and monitoring center for Codex workflows.",
+  "description": "Task-fit gate, local agent CLI router, bounded parallel worker runner, and monitoring center for Codex workflows.",
   "type": "module",
   "bin": {
     "agent-router": "./src/cli.js"

@@ -2,6 +2,10 @@
 
 This runtime is bundled by the `minimax-agent-router` Codex plugin.
 
+The runtime enables a task-fit gate by default. Editing work needs a narrow scope, code work needs an exact test command, each worker has a five-minute default budget, and successful runs remain pending Codex review.
+
+For a structured single task, use `route --task-file task.json` first, then reuse the same file with `run --task-file task.json` only when the assessment decision is `delegate`.
+
 ## Quick Check
 
 ```cmd

@@ -18,6 +18,79 @@ describe("agent-router CLI", () => {
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.runByCodex, true);
     assert.equal(payload.agentName, "codex");
+    assert.equal(payload.assessment.decision, "codex");
+  });
+
+  it("blocks risky work even when an agent is explicitly requested", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-cli-"));
+    const configPath = writeConfig(tmpDir);
+
+    const result = runCli([
+      "route",
+      "--task",
+      "用 Windows COM 实现 PowerPoint 自动化核心模块",
+      "--agent",
+      "nodeEcho",
+      "--json",
+      "--config",
+      configPath
+    ], tmpDir);
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.runByCodex, true);
+    assert.match(payload.reason, /platform integration/i);
+  });
+
+  it("accepts a scoped short task with an exact test command", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-cli-"));
+    const configPath = writeConfig(tmpDir);
+    const task = [
+      "Task: fix the known parser boundary condition",
+      "Scope: src/parser.js",
+      "Test Command: npm test -- parser"
+    ].join("\n");
+
+    const result = runCli(["route", "--task", task, "--json", "--config", configPath], tmpDir);
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.runByCodex, false);
+    assert.equal(payload.assessment.decision, "delegate");
+    assert.equal(payload.assessment.fit, "good");
+  });
+
+  it("routes and runs a structured single-task JSON file", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-cli-"));
+    const configPath = writeConfig(tmpDir);
+    const taskPath = path.join(tmpDir, "task.json");
+    fs.writeFileSync(taskPath, JSON.stringify({
+      kind: "tests",
+      task: "Add one focused parser test.",
+      scope: ["test/parser.test.js"],
+      testCommand: "npm test -- parser",
+      estimatedMinutes: 3
+    }), "utf8");
+
+    const routeResult = runCli(["route", "--task-file", taskPath, "--json", "--config", configPath], tmpDir);
+    assert.equal(routeResult.status, 0, routeResult.stderr);
+    assert.equal(JSON.parse(routeResult.stdout).assessment.decision, "delegate");
+
+    const runResult = runCli([
+      "run",
+      "--task-file",
+      taskPath,
+      "--agent",
+      "nodeEcho",
+      "--json",
+      "--config",
+      configPath
+    ], tmpDir);
+    assert.equal(runResult.status, 0, runResult.stderr);
+    const payload = JSON.parse(runResult.stdout);
+    assert.equal(payload.status, "ok");
+    assert.match(payload.stdout, /Only modify files listed in Scope/);
+    assert.match(payload.stdout, /npm test -- parser/);
   });
 
   it("runs an explicit agent and writes a log", () => {
@@ -27,7 +100,7 @@ describe("agent-router CLI", () => {
     const result = runCli([
       "run",
       "--task",
-      "hello",
+      "请只回复：hello",
       "--agent",
       "nodeEcho",
       "--model",
@@ -42,7 +115,8 @@ describe("agent-router CLI", () => {
     assert.equal(result.status, 0, result.stderr);
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.status, "ok");
-    assert.equal(payload.stdout, "pong:hello");
+    assert.equal(payload.reviewStatus, "pending-codex");
+    assert.equal(payload.stdout, "pong:请只回复：hello");
     assert.equal(fs.existsSync(path.join(tmpDir, ".agent-router", "runs.jsonl")), true);
   });
 
@@ -53,8 +127,8 @@ describe("agent-router CLI", () => {
     fs.writeFileSync(
       tasksPath,
       JSON.stringify([
-        { id: "docs", prompt: "write docs" },
-        { id: "tests", prompt: "write tests" }
+        { id: "docs", kind: "docs", task: "write docs", scope: ["README.md"] },
+        { id: "tests", kind: "tests", task: "write tests", scope: ["test/foo.test.js"], testCommand: "npm test -- foo" }
       ]),
       "utf8"
     );
@@ -73,17 +147,21 @@ describe("agent-router CLI", () => {
     assert.equal(result.status, 0, result.stderr);
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.status, "ok");
+    assert.equal(payload.reviewStatus, "pending-codex");
     assert.equal(payload.summary.totalTasks, 2);
     assert.equal(payload.summary.okTasks, 2);
+    assert.equal(payload.summary.pendingReviewTasks, 2);
     assert.deepEqual(payload.results.map((entry) => entry.taskId), ["docs", "tests"]);
-    assert.deepEqual(payload.results.map((entry) => entry.stdout), ["pong:write docs", "pong:write tests"]);
+    assert.deepEqual(payload.results.map((entry) => entry.reviewStatus), ["pending-codex", "pending-codex"]);
+    assert.match(result.stderr, /started/);
+    assert.match(result.stderr, /finished/);
   });
 
   it("prints stats as JSON", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-cli-"));
     const configPath = writeConfig(tmpDir);
 
-    runCli(["run", "--task", "hello", "--agent", "nodeEcho", "--json", "--config", configPath], tmpDir);
+    runCli(["run", "--task", "请只回复：hello", "--agent", "nodeEcho", "--json", "--config", configPath], tmpDir);
     const result = runCli(["stats", "--json", "--config", configPath], tmpDir);
 
     assert.equal(result.status, 0, result.stderr);

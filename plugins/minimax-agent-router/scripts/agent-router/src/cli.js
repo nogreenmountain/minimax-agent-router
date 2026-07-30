@@ -8,6 +8,7 @@ import {
   DEFAULT_CONFIG,
   executeAgent,
   executeManyTasks,
+  formatManyTaskPrompt,
   getLogPath,
   isCommandAvailable,
   loadConfig,
@@ -48,7 +49,7 @@ async function main(argv) {
   }
 
   if (command === "route") {
-    const task = getTask(flags, positional);
+    const task = getTask(flags, positional, cwd);
     const route = chooseRoute(task, config, {
       agentName: flags.agent,
       model: flags.model,
@@ -59,7 +60,7 @@ async function main(argv) {
   }
 
   if (command === "run") {
-    const task = getTask(flags, positional);
+    const task = getTask(flags, positional, cwd);
     const route = chooseRoute(task, config, {
       agentName: flags.agent,
       model: flags.model,
@@ -71,7 +72,8 @@ async function main(argv) {
       return;
     }
 
-    const result = executeAgent(task, config, {
+    const prompt = typeof task === "string" ? task : formatManyTaskPrompt(task);
+    const result = executeAgent(prompt, config, {
       ...route,
       logPath,
       cwd,
@@ -115,7 +117,8 @@ async function main(argv) {
       parallel: Number(flags.parallel || 2),
       logPath,
       cwd,
-      timeoutMs: Number(flags["timeout-ms"] || flags.timeoutMs || config.defaults?.timeoutMs || 0) || undefined
+      timeoutMs: Number(flags["timeout-ms"] || flags.timeoutMs || config.defaults?.timeoutMs || 0) || undefined,
+      onEvent: (event) => printTaskEvent(event, flags)
     });
 
     if (flags.json) {
@@ -221,16 +224,18 @@ function printMiniMaxGuide(configPath) {
       "2. Verify that the route is ready:",
       `node .\\src\\cli.js doctor --config "${configPath}"`,
       "",
-      "3. Delegate a scoped task through Claude Code + MiniMax:",
-      `node .\\src\\cli.js run --agent claude-minimax --task "Workspace: <absolute path>`,
-      "Task: <specific change>",
-      "Scope: <files it may touch>",
-      "Constraints: preserve style; do not run destructive git commands.",
-      `Output: summarize changed files and tests." --config "${configPath}"`,
+      "3. Put one 3-5 minute task in task.json with kind, scope, testCommand, and optional apiExamples.",
+      "",
+      "4. Preflight without spending MiniMax quota:",
+      `node .\\src\\cli.js route --task-file task.json --json --config "${configPath}"`,
+      "",
+      "5. Run only when assessment.decision is delegate:",
+      `node .\\src\\cli.js run --agent claude-minimax --task-file task.json --json --config "${configPath}"`,
       "",
       "Notes:",
       "- Do not write the MiniMax key into agent-router.config.json.",
       "- The wrapper maps MINIMAX_API_KEY to Claude Code's Anthropic-compatible endpoint.",
+      "- The default worker budget is 5 minutes, and every successful result still needs Codex review.",
       "- Use doctor whenever routing falls back to another agent."
     ].join("\n")
   );
@@ -238,9 +243,9 @@ function printMiniMaxGuide(configPath) {
 
 function formatRoute(route) {
   if (route.runByCodex) {
-    return `Codex should handle this task itself (${route.reason}).`;
+    return `Codex should handle this task itself (${route.reason}). score=${route.assessment?.score ?? "n/a"}`;
   }
-  return `Route to ${route.agentName} with model=${route.model}, think=${route.think} (${route.reason}).`;
+  return `Route to ${route.agentName} with model=${route.model}, think=${route.think} (${route.reason}). score=${route.assessment?.score ?? "n/a"}`;
 }
 
 function formatStats(summary, logPath) {
@@ -255,7 +260,7 @@ function formatStats(summary, logPath) {
 function formatRunMany(result) {
   const lines = [
     `Run many: status=${result.status} parallel=${result.parallel}`,
-    `Tasks: total=${result.summary.totalTasks} ok=${result.summary.okTasks} error=${result.summary.errorTasks} codex=${result.summary.codexTasks}`
+    `Tasks: total=${result.summary.totalTasks} ok=${result.summary.okTasks} error=${result.summary.errorTasks} timedOut=${result.summary.timedOutTasks} codex=${result.summary.codexTasks} pendingReview=${result.summary.pendingReviewTasks}`
   ];
 
   for (const entry of result.results) {
@@ -268,6 +273,14 @@ function formatRunMany(result) {
   return lines.join("\n");
 }
 
+function printTaskEvent(event, flags) {
+  if (flags.quiet) {
+    return;
+  }
+  const status = event.status ? ` status=${event.status}` : "";
+  process.stderr.write(`[agent-router] ${event.taskId} ${event.type === "task-started" ? "started" : "finished"}${status}\n`);
+}
+
 function printPayload(payload, flags, text = null) {
   if (flags.json) {
     console.log(JSON.stringify(payload, null, 2));
@@ -276,10 +289,19 @@ function printPayload(payload, flags, text = null) {
   console.log(text ?? String(payload));
 }
 
-function getTask(flags, positional) {
+function getTask(flags, positional, cwd) {
+  const taskFileFlag = flags["task-file"] || flags.taskFile;
+  if (taskFileFlag) {
+    const taskFile = path.isAbsolute(taskFileFlag) ? taskFileFlag : path.join(cwd, taskFileFlag);
+    const task = JSON.parse(fs.readFileSync(taskFile, "utf8"));
+    if (!task || Array.isArray(task) || typeof task !== "object") {
+      throw new Error("--task-file must contain one structured task object.");
+    }
+    return task;
+  }
   const task = flags.task || positional.join(" ");
   if (!task) {
-    throw new Error("Missing task. Pass --task \"...\" or provide the task as positional text.");
+    throw new Error("Missing task. Pass --task \"...\", --task-file task.json, or positional text.");
   }
   return task;
 }
@@ -332,8 +354,8 @@ Commands:
   init                 Create agent-router.config.json
   doctor               Show configured agent command availability
   minimax              Show how to enable Claude Code through MiniMax
-  route --task "..."   Decide whether Codex or an external agent should handle a task
-  run --task "..."     Run the selected external agent and log usage
+  route --task "..."   Assess task fit and decide whether Codex or an agent should handle it
+  run --task "..."     Run a task that passed the safety gate and log usage
   run-many --tasks f   Run independent tasks with a limited parallel worker pool
   stats                Summarize usage logs
   monitor              Start the local monitoring dashboard
@@ -343,6 +365,9 @@ Common options:
   --agent <name>       Force an agent
   --model <name>       Force a model
   --think <level>      Force thinking strength, such as low, medium, high
+  --task-file <path>   Load one structured task JSON object for route or run
+  --timeout-ms <ms>    Override the default 5-minute worker budget
+  --quiet              Hide run-many start/finish progress events
   --json               Print machine-readable JSON
 `);
 }

@@ -3,16 +3,13 @@
   "defaults": {
     "agent": "claude-minimax",
     "think": "low",
-    "timeoutMs": 600000
+    "timeoutMs": 300000
   },
   "routing": {
     "codexKeywords": [
       "规划",
       "计划",
       "架构",
-      "review",
-      "code review",
-      "审查",
       "生图",
       "画图",
       "image",
@@ -27,6 +24,41 @@
       "生产",
       "回滚"
     ],
+    "taskGate": {
+      "enabled": true,
+      "maxEstimatedMinutes": 5,
+      "maxScopeEntries": 2,
+      "platformIntegrationKeywords": [
+        "windows com",
+        "powerpoint com",
+        "office com",
+        "office automation",
+        "office 自动化",
+        "com 自动化"
+      ],
+      "broadTaskKeywords": [
+        "完整实现",
+        "全量实现",
+        "大范围重构",
+        "重构整个",
+        "多模块",
+        "多个模块",
+        "共享接口",
+        "核心模块",
+        "end-to-end implementation",
+        "large refactor"
+      ],
+      "unfamiliarApiKeywords": [
+        "陌生 api",
+        "新的 api",
+        "新 api",
+        "pptx api",
+        "third-party api",
+        "第三方 api",
+        "new sdk",
+        "新的 sdk"
+      ]
+    },
     "preferredAgentOrder": [
       "claude-minimax",
       "pi",

@@ -10,6 +10,21 @@ Codex -> minimax-agent-router -> claude-minimax wrapper -> Claude Code CLI -> Mi
 
 简单说：Codex 当负责人，MiniMax 当执行助手。
 
+## v0.3 更新方向：先判断值不值得派
+
+这一版新增 `Task Gate`。插件会先判断任务是否适合 MiniMax，再决定是否调用模型，避免把高风险、过宽或缺少验收条件的工作派出去浪费时间。
+
+默认规则：
+
+- 单个 worker 目标用时 3-5 分钟，硬超时从 10 分钟调整为 5 分钟。
+- 编辑任务必须写清一个文件、一个源码/测试文件对，或一个明确目录。
+- 代码和测试任务必须提供一个准确的 `testCommand`。
+- 陌生第三方 API 必须提供经过确认的 `apiExamples`，否则交回 Codex。
+- Windows COM、Office 自动化、多模块核心实现、安全、权限、部署和最终验收直接留给 Codex。
+- 即使显式指定 `--agent claude-minimax`，也不能绕过 Task Gate。
+- worker 退出码为 0 只表示执行结束，结果会标记为 `reviewStatus=pending-codex`。
+- 超时结果标记 `partialChangesPossible=true`，提醒 Codex 检查工作区半成品。
+
 ## 适合交给 MiniMax 的任务
 
 - 补单元测试、修小测试。
@@ -17,6 +32,7 @@ Codex -> minimax-agent-router -> claude-minimax wrapper -> Claude Code CLI -> Mi
 - 修 lint、TypeScript、import、格式化这类机械问题。
 - 有明确复现路径的小 bug。
 - 范围很窄的小组件、小 helper 函数。
+- 不修改文件的独立调研、方案比较和初步代码审查。
 
 ## 仍然应该由 Codex 负责的任务
 
@@ -24,6 +40,8 @@ Codex -> minimax-agent-router -> claude-minimax wrapper -> Claude Code CLI -> Mi
 - 安全、密钥、登录鉴权、权限、审计、数据库迁移、部署和回滚。
 - 代码审查、集成判断、最终测试、最终交付说明。
 - 文件范围或风险边界不清楚的任务。
+- 陌生 API、新框架核心架构、Windows COM / Office / PowerPoint 自动化。
+- 多模块共享接口的大型实现和最终发布判断。
 
 MiniMax 的输出只当草稿，Codex 需要继续检查 diff、跑测试，再决定是否接受。
 
@@ -150,6 +168,56 @@ Output:
 
 Codex 拿到结果后，仍然要检查输出、查看 diff、跑相关测试，再给最终答复。
 
+## 推荐流程
+
+先做免费预检，不调用 MiniMax：
+
+```cmd
+node .\src\cli.js route --task-file single-task.json --json --config .\agent-router.config.json
+```
+
+只有返回下面结果时才执行：
+
+```json
+{
+  "assessment": {
+    "decision": "delegate",
+    "fit": "good"
+  }
+}
+```
+
+如果返回 `decision=codex`，按 `reasons` 缩小任务或直接由 Codex 完成，不要靠 `--agent` 强行绕过。
+
+推荐的结构化任务字段：
+
+```json
+{
+  "id": "date-format-fix",
+  "kind": "small-code",
+  "task": "修复一个已知日期格式化边界条件。",
+  "scope": [
+    "src/date-format.ts",
+    "test/date-format.test.ts"
+  ],
+  "testCommand": "npm test -- date-format",
+  "estimatedMinutes": 4,
+  "apiExamples": [
+    "formatDate(value, { timeZone: 'UTC' })"
+  ]
+}
+```
+
+`kind` 建议使用：`research`、`docs`、`tests`、`small-code`、`mechanical`、`review`。只读分析再加 `readOnly: true`。
+
+预检通过后执行同一份任务文件：
+
+```cmd
+node .\src\cli.js run --task-file single-task.json --agent claude-minimax --json --config .\agent-router.config.json
+```
+
+仓库内的 `plugins/minimax-agent-router/assets/single-task.example.json` 可以直接作为模板。
+
 ## 并行子智能体模式
 
 `run-many` 可以把多个互不冲突的小任务同时交给 MiniMax worker 执行。它适合用来增效，但前提是 Codex 先把任务拆清楚，并且每个 worker 的文件范围不能重叠。
@@ -214,7 +282,11 @@ totalTasks：任务总数
 okTasks：成功执行的 worker 数
 errorTasks：失败的 worker 数
 codexTasks：因为命中高风险关键词而保留给 Codex 的任务数
+timedOutTasks：触发 5 分钟预算的任务数
+pendingReviewTasks：等待 Codex 检查和复测的任务数
 ```
+
+并行运行期间，stderr 会实时打印每个 worker 的 `started` / `finished`，最终 JSON 仍保持在 stdout。需要安静输出时加 `--quiet`。
 
 注意：并行执行的结果仍然不是最终交付。Codex 必须回收所有结果、检查 diff、解决冲突、跑最终测试。
 
