@@ -1,0 +1,22 @@
+{
+  "name": "minimax-agent-router",
+  "version": "0.1.0",
+  "description": "Delegate scoped Codex implementation chores to Claude Code CLI backed by MiniMax, while Codex keeps planning, review, and final verification.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "MiniMax Agent Router",
+    "shortDescription": "Route safe coding chores to Claude Code + MiniMax.",
+    "longDescription": "A local Codex plugin that lets Codex supervise Claude Code CLI through MiniMax for low-risk coding, test, documentation, and mechanical refactor work. Codex keeps ownership of planning, architecture, security, review, deployment, and final verification.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": ["Write", "Local"],
+    "defaultPrompt": [
+      "Use MiniMax for safe coding chores",
+      "Check if claude-minimax is ready",
+      "Delegate this small test fix"
+    ]
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "logPath": ".agent-router/runs.jsonl",
+  "defaults": {
+    "agent": "claude-minimax",
+    "think": "low",
+    "timeoutMs": 600000
+  },
+  "routing": {
+    "codexKeywords": [
+      "规划",
+      "计划",
+      "架构",
+      "review",
+      "code review",
+      "审查",
+      "生图",
+      "画图",
+      "image",
+      "高风险",
+      "安全",
+      "权限",
+      "密钥",
+      "审计",
+      "数据库迁移",
+      "部署",
+      "上线",
+      "生产",
+      "回滚"
+    ],
+    "preferredAgentOrder": [
+      "claude-minimax",
+      "pi",
+      "claude",
+      "hermes"
+    ]
+  },
+  "quotas": {
+    "claude-minimax": {
+      "monthlyCalls": 0,
+      "monthlyTokens": 0,
+      "monthlyBudgetUsd": 0
+    },
+    "pi": {
+      "monthlyCalls": 0,
+      "monthlyTokens": 0,
+      "monthlyBudgetUsd": 0
+    },
+    "claude": {
+      "monthlyCalls": 0,
+      "monthlyTokens": 0,
+      "monthlyBudgetUsd": 0
+    },
+    "hermes": {
+      "monthlyCalls": 0,
+      "monthlyTokens": 0,
+      "monthlyBudgetUsd": 0
+    }
+  },
+  "agents": {
+    "claude-minimax": {
+      "enabled": true,
+      "command": "node",
+      "args": [
+        "{router_dir}\\src\\claude-minimax.js",
+        "--model",
+        "{model}",
+        "--think",
+        "{think}"
+      ],
+      "promptMode": "stdin",
+      "requiredEnvAny": [
+        "MINIMAX_API_KEY",
+        "MINIMAX_SUBSCRIPTION_KEY"
+      ],
+      "defaultModel": "MiniMax-M3[1m]",
+      "defaultThink": "low",
+      "pricing": {
+        "inputPer1k": 0,
+        "outputPer1k": 0
+      }
+    },
+    "pi": {
+      "enabled": true,
+      "command": "pi",
+      "args": [
+        "--model",
+        "{model}",
+        "--think",
+        "{think}"
+      ],
+      "promptMode": "stdin",
+      "defaultModel": "deepseek-chat",
+      "defaultThink": "low",
+      "pricing": {
+        "inputPer1k": 0,
+        "outputPer1k": 0
+      }
+    },
+    "claude": {
+      "enabled": true,
+      "command": "C:\\Users\\test\\nodejs\\claude.cmd",
+      "args": [
+        "--print",
+        "--model",
+        "{model}"
+      ],
+      "promptMode": "stdin",
+      "defaultModel": "sonnet",
+      "defaultThink": "medium",
+      "pricing": {
+        "inputPer1k": 0,
+        "outputPer1k": 0
+      }
+    },
+    "hermes": {
+      "enabled": true,
+      "command": "hermes",
+      "args": [
+        "--model",
+        "{model}",
+        "--think",
+        "{think}"
+      ],
+      "promptMode": "stdin",
+      "defaultModel": "grok-4.5",
+      "defaultThink": "medium",
+      "pricing": {
+        "inputPer1k": 0,
+        "outputPer1k": 0
+      }
+    }
+  }
+}

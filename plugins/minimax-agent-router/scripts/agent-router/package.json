@@ -1,0 +1,18 @@
+{
+  "name": "agent-router-center",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local agent CLI router and monitoring center for Codex workflows.",
+  "type": "module",
+  "bin": {
+    "agent-router": "./src/cli.js"
+  },
+  "scripts": {
+    "test": "node --test",
+    "doctor": "node ./src/cli.js doctor",
+    "monitor": "node ./src/cli.js monitor"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

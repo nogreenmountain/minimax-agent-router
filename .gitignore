@@ -1,0 +1,17 @@
+# Runtime state
+**/.agent-router/
+**/runs.jsonl
+
+# Dependencies and package-manager noise
+node_modules/
+npm-debug.log*
+
+# Local environment files
+.env
+.env.*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,20 @@
+{
+  "name": "nogreenmountain",
+  "interface": {
+    "displayName": "nogreenmountain Codex Plugins"
+  },
+  "plugins": [
+    {
+      "name": "minimax-agent-router",
+      "source": {
+        "source": "local",
+        "path": "./plugins/minimax-agent-router"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
