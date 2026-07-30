@@ -46,6 +46,39 @@ describe("agent-router CLI", () => {
     assert.equal(fs.existsSync(path.join(tmpDir, ".agent-router", "runs.jsonl")), true);
   });
 
+  it("runs many tasks from a JSON file and prints a summary", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-cli-"));
+    const configPath = writeConfig(tmpDir);
+    const tasksPath = path.join(tmpDir, "tasks.json");
+    fs.writeFileSync(
+      tasksPath,
+      JSON.stringify([
+        { id: "docs", prompt: "write docs" },
+        { id: "tests", prompt: "write tests" }
+      ]),
+      "utf8"
+    );
+
+    const result = runCli([
+      "run-many",
+      "--tasks",
+      tasksPath,
+      "--parallel",
+      "2",
+      "--json",
+      "--config",
+      configPath
+    ], tmpDir);
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.status, "ok");
+    assert.equal(payload.summary.totalTasks, 2);
+    assert.equal(payload.summary.okTasks, 2);
+    assert.deepEqual(payload.results.map((entry) => entry.taskId), ["docs", "tests"]);
+    assert.deepEqual(payload.results.map((entry) => entry.stdout), ["pong:write docs", "pong:write tests"]);
+  });
+
   it("prints stats as JSON", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-cli-"));
     const configPath = writeConfig(tmpDir);

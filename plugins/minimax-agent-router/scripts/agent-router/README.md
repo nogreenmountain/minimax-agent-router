@@ -37,6 +37,32 @@ Expected result:
 }
 ```
 
+## Parallel Tasks
+
+Use `run-many` when Codex has already split work into independent, non-overlapping chores:
+
+```cmd
+node .\src\cli.js run-many --tasks parallel-tasks.json --parallel 3 --agent claude-minimax --json --config .\agent-router.config.json
+```
+
+The tasks file may be either an array or an object with a `tasks` array:
+
+```json
+{
+  "tasks": [
+    {
+      "id": "backend-tests",
+      "task": "Add focused backend tests.",
+      "scope": "Only edit tests/backend/**.",
+      "constraints": "Do not modify production code.",
+      "output": "Summarize changed files and tests run."
+    }
+  ]
+}
+```
+
+Keep auth, permissions, database migrations, deployment, production config, shared-file edits, and architecture decisions in Codex.
+
 ## Tests
 
 ```cmd

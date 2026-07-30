@@ -8,6 +8,7 @@ import {
   chooseRoute,
   estimateCost,
   estimateTokens,
+  executeManyTasks,
   executeAgent,
   isCommandAvailable,
   loadConfig,
@@ -304,5 +305,76 @@ describe("executeAgent", () => {
     assert.equal(result.status, "ok");
     assert.equal(result.stdout, "hello from arg");
     assert.equal(loadRuns(logPath)[0].agent, "nodeArgEcho");
+  });
+});
+
+describe("executeManyTasks", () => {
+  it("runs independent tasks with a concurrency limit and preserves result order", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-many-"));
+    const logPath = path.join(tmpDir, "runs.jsonl");
+    const config = {
+      defaults: { agent: "nodeDelay", think: "low", timeoutMs: 5000 },
+      routing: { codexKeywords: ["planning"], preferredAgentOrder: ["nodeDelay"] },
+      agents: {
+        nodeDelay: {
+          enabled: true,
+          command: process.execPath,
+          args: [
+            "-e",
+            "let data=''; process.stdin.on('data', d => data += d); process.stdin.on('end', () => setTimeout(() => process.stdout.write('done:' + data), 250));"
+          ],
+          promptMode: "stdin",
+          defaultModel: "mini",
+          defaultThink: "low",
+          pricing: { inputPer1k: 0, outputPer1k: 0 }
+        }
+      }
+    };
+
+    const started = performance.now();
+    const result = await executeManyTasks(["one", "two", "three"], config, {
+      parallel: 3,
+      logPath,
+      cwd: tmpDir,
+      isCommandAvailable: () => true
+    });
+    const elapsed = performance.now() - started;
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.summary.totalTasks, 3);
+    assert.equal(result.summary.okTasks, 3);
+    assert.deepEqual(result.results.map((entry) => entry.stdout), ["done:one", "done:two", "done:three"]);
+    assert.ok(elapsed < 650, `expected parallel execution, took ${elapsed}ms`);
+    assert.equal(loadRuns(logPath).length, 3);
+  });
+
+  it("keeps Codex-owned tasks out of the worker pool", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-many-"));
+    const config = {
+      defaults: { agent: "nodeEcho", think: "low", timeoutMs: 5000 },
+      routing: { codexKeywords: ["planning"], preferredAgentOrder: ["nodeEcho"] },
+      agents: {
+        nodeEcho: {
+          enabled: true,
+          command: process.execPath,
+          args: ["-e", "process.stdin.on('data', d => process.stdout.write('done:' + d))"],
+          promptMode: "stdin",
+          defaultModel: "mini",
+          defaultThink: "low"
+        }
+      }
+    };
+
+    const result = await executeManyTasks(["planning: decide architecture", "write docs"], config, {
+      parallel: 2,
+      cwd: tmpDir,
+      isCommandAvailable: () => true
+    });
+
+    assert.equal(result.status, "needs-codex");
+    assert.equal(result.summary.codexTasks, 1);
+    assert.equal(result.summary.okTasks, 1);
+    assert.equal(result.results[0].status, "codex");
+    assert.equal(result.results[1].status, "ok");
   });
 });

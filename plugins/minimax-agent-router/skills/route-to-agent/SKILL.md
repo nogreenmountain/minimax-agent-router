@@ -22,11 +22,19 @@ Codex must handle:
 - Code review, integration decisions, final testing, and the final user-facing answer.
 - Any task where the allowed files, expected behavior, or risk boundary is unclear.
 
-Delegate to `claude-minimax` only for:
+Delegate a single task to `claude-minimax` only for:
 
 - Focused unit tests, documentation edits, small bug fixes, lint/type fixes, mechanical refactors, and small components.
 - Work with a narrow file or directory scope and a clear success condition.
 - Draft implementation work that Codex will inspect before accepting.
+
+Use bounded parallel MiniMax workers only when there are 2 or more independent chores whose allowed files do not overlap. Good parallel batches include:
+
+- Backend tests in one directory, documentation in another directory, and frontend lint fixes in a third directory.
+- Read-only analysis tasks that produce recommendations without editing files.
+- Mechanical updates where each task has a separate scope and clear output.
+
+Do not use parallel workers for shared files, database migrations, auth/permission/security work, production deployment, unclear requirements, or broad refactors. Codex must split the tasks, set non-overlapping scopes, review every result, resolve conflicts, and run final verification.
 
 Never treat delegated output as final. Codex must inspect the result, read the diff, run relevant tests, and decide whether to accept, revise, or discard it.
 
@@ -78,6 +86,14 @@ Run delegated work:
 node "<plugin-root>\scripts\agent-router\src\cli.js" run --agent claude-minimax --model "MiniMax-M3[1m]" --think low --task "<delegation prompt>" --json --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
 ```
 
+Run independent tasks in a bounded parallel worker pool:
+
+```powershell
+node "<plugin-root>\scripts\agent-router\src\cli.js" run-many --tasks "<tasks.json>" --parallel 3 --agent claude-minimax --model "MiniMax-M3[1m]" --think low --json --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
+```
+
+The `tasks.json` file can be either an array or an object with a `tasks` array. Each task may use `prompt` for raw prompt text, or `task` plus optional `workspace`, `scope`, `constraints`, and `output` fields for a structured delegation prompt. Use `assets/parallel-tasks.example.json` as the reference shape.
+
 Open monitoring:
 
 ```powershell
@@ -117,8 +133,9 @@ Use `low` effort for mechanical edits, `medium` for ordinary small bug fixes, an
 Codex must:
 
 1. Inspect stdout and stderr.
-2. Review changed files or `git diff`.
-3. Check for scope creep or risky edits.
-4. Run relevant tests/builds.
-5. Fix minor integration issues directly or re-delegate with a narrower prompt.
-6. Give the final answer only after verification.
+2. For `run-many`, inspect every worker result and note any `status=codex` task that was intentionally kept out of the worker pool.
+3. Review changed files or `git diff`.
+4. Check for scope creep, overlap, conflicts, or risky edits.
+5. Run relevant tests/builds.
+6. Fix minor integration issues directly or re-delegate with a narrower prompt.
+7. Give the final answer only after verification.

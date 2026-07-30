@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 export const DEFAULT_CONFIG = {
   logPath: ".agent-router/runs.jsonl",
@@ -289,6 +289,253 @@ export function executeAgent(prompt, config, options = {}) {
   };
 }
 
+export async function executeAgentAsync(prompt, config, options = {}) {
+  const agentName = options.agentName;
+  const agent = config.agents?.[agentName];
+  if (!agent) {
+    throw new Error(`Unknown agent: ${agentName}`);
+  }
+
+  const cwd = options.cwd || process.cwd();
+  const startedAt = new Date();
+  const started = performance.now();
+  const promptText = String(prompt || "");
+  const promptFile = preparePromptFile(agent.promptMode, promptText, cwd);
+  const templateValues = {
+    model: options.model || agent.defaultModel || "auto",
+    think: options.think || agent.defaultThink || config.defaults?.think || "low",
+    prompt: promptText,
+    prompt_file: promptFile
+  };
+  const args = renderArgs(agent.args || [], templateValues);
+  const input = agent.promptMode === "stdin" || !agent.promptMode ? promptText : undefined;
+  const timeoutMs = options.timeoutMs || config.defaults?.timeoutMs || DEFAULT_CONFIG.defaults.timeoutMs;
+
+  return await new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let spawnError = null;
+    let timedOut = false;
+    let settled = false;
+
+    const child = spawn(agent.command, args, {
+      cwd,
+      env: { ...process.env, ...(options.env || {}) },
+      windowsHide: true
+    });
+
+    const timer = timeoutMs
+      ? setTimeout(() => {
+          timedOut = true;
+          child.kill();
+        }, timeoutMs)
+      : null;
+
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      spawnError = error;
+    });
+    child.on("close", (exitCode, signal) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      cleanupPromptFile(promptFile);
+
+      const completedAt = new Date();
+      const durationMs = Math.round(performance.now() - started);
+      const inputTokens = estimateTokens(promptText);
+      const outputTokens = estimateTokens(stdout);
+      const status = exitCode === 0 && !spawnError && !timedOut ? "ok" : "error";
+      const run = {
+        id: makeRunId(startedAt),
+        startedAt: startedAt.toISOString(),
+        completedAt: completedAt.toISOString(),
+        durationMs,
+        status,
+        agent: agentName,
+        model: templateValues.model,
+        think: templateValues.think,
+        command: agent.command,
+        args,
+        cwd,
+        exitCode,
+        signal,
+        error: spawnError ? spawnError.message : timedOut ? `Timed out after ${timeoutMs}ms` : null,
+        stdoutChars: stdout.length,
+        stderrChars: stderr.length,
+        inputTokens,
+        outputTokens,
+        estimatedCost: estimateCost(inputTokens, outputTokens, agent.pricing)
+      };
+
+      if (options.logPath) {
+        appendRun(options.logPath, run);
+      }
+
+      resolve({
+        ...run,
+        stdout,
+        stderr
+      });
+    });
+
+    if (input !== undefined) {
+      child.stdin?.end(input);
+    } else {
+      child.stdin?.end();
+    }
+  });
+}
+
+export async function executeManyTasks(tasksInput, config, options = {}) {
+  const tasks = normalizeManyTasks(tasksInput);
+  const parallel = Math.max(1, Math.floor(Number(options.parallel || config.defaults?.parallel || 2)));
+  const results = new Array(tasks.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < tasks.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await executeOneTask(tasks[currentIndex], currentIndex);
+    }
+  }
+
+  async function executeOneTask(task, index) {
+    const prompt = formatManyTaskPrompt(task);
+    const route = chooseRoute(prompt, config, {
+      agentName: task.agent || options.agentName,
+      model: task.model || options.model,
+      think: task.think || options.think,
+      env: options.env || process.env,
+      isCommandAvailable: options.isCommandAvailable
+    });
+    const taskId = task.id || task.name || `task-${index + 1}`;
+
+    if (route.runByCodex) {
+      return {
+        taskId,
+        index,
+        status: "codex",
+        reason: route.reason,
+        agent: "codex",
+        stdout: "",
+        stderr: ""
+      };
+    }
+
+    const taskCwd = task.workspace || options.cwd || process.cwd();
+    const result = await executeAgentAsync(prompt, config, {
+      ...route,
+      logPath: options.logPath,
+      cwd: taskCwd,
+      timeoutMs: task.timeoutMs || options.timeoutMs
+    });
+
+    return {
+      taskId,
+      index,
+      ...result
+    };
+  }
+
+  const workerCount = Math.min(parallel, tasks.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  const summary = summarizeManyTaskResults(results);
+  return {
+    status: summary.errorTasks > 0 ? "error" : summary.codexTasks > 0 ? "needs-codex" : "ok",
+    parallel,
+    summary,
+    results
+  };
+}
+
+export function normalizeManyTasks(tasksInput) {
+  const rawTasks = Array.isArray(tasksInput) ? tasksInput : tasksInput?.tasks;
+  if (!Array.isArray(rawTasks) || rawTasks.length === 0) {
+    throw new Error("run-many requires a non-empty tasks array.");
+  }
+
+  return rawTasks.map((task, index) => {
+    if (typeof task === "string") {
+      return { id: `task-${index + 1}`, prompt: task };
+    }
+    if (!task || typeof task !== "object") {
+      throw new Error(`Task ${index + 1} must be a string or object.`);
+    }
+    if (!task.task && !task.prompt) {
+      throw new Error(`Task ${index + 1} is missing task or prompt.`);
+    }
+    return task;
+  });
+}
+
+export function formatManyTaskPrompt(task) {
+  if (typeof task === "string") {
+    return task;
+  }
+  if (task.prompt) {
+    return String(task.prompt);
+  }
+
+  const lines = [];
+  if (task.workspace) {
+    lines.push(`Workspace: ${task.workspace}`, "");
+  }
+  lines.push("Task:", String(task.task));
+  if (task.scope) {
+    lines.push("", "Scope:", formatTaskField(task.scope));
+  }
+  if (task.constraints) {
+    lines.push("", "Constraints:", formatTaskField(task.constraints));
+  }
+  if (task.output) {
+    lines.push("", "Output:", formatTaskField(task.output));
+  }
+  return lines.join("\n");
+}
+
+function summarizeManyTaskResults(results) {
+  const summary = {
+    totalTasks: results.length,
+    okTasks: 0,
+    errorTasks: 0,
+    codexTasks: 0,
+    totalDurationMs: 0,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalEstimatedCost: 0
+  };
+
+  for (const result of results) {
+    if (result.status === "ok") {
+      summary.okTasks += 1;
+    } else if (result.status === "codex") {
+      summary.codexTasks += 1;
+    } else {
+      summary.errorTasks += 1;
+    }
+    summary.totalDurationMs += Number(result.durationMs || 0);
+    summary.totalInputTokens += Number(result.inputTokens || 0);
+    summary.totalOutputTokens += Number(result.outputTokens || 0);
+    summary.totalEstimatedCost = roundMoney(summary.totalEstimatedCost + Number(result.estimatedCost || 0));
+  }
+
+  return summary;
+}
+
 export function appendRun(logPath, run) {
   fs.mkdirSync(path.dirname(logPath), { recursive: true });
   fs.appendFileSync(logPath, `${JSON.stringify(run)}${os.EOL}`, "utf8");
@@ -372,6 +619,13 @@ function addToBucket(bucket, run, thinkKey) {
 
 function roundMoney(value) {
   return Math.round(Number(value || 0) * 1_000_000) / 1_000_000;
+}
+
+function formatTaskField(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => `- ${item}`).join("\n");
+  }
+  return String(value);
 }
 
 function isPlainObject(value) {

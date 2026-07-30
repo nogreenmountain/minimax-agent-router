@@ -150,6 +150,74 @@ Output:
 
 Codex 拿到结果后，仍然要检查输出、查看 diff、跑相关测试，再给最终答复。
 
+## 并行子智能体模式
+
+`run-many` 可以把多个互不冲突的小任务同时交给 MiniMax worker 执行。它适合用来增效，但前提是 Codex 先把任务拆清楚，并且每个 worker 的文件范围不能重叠。
+
+适合并行的例子：
+
+```text
+Worker A：只补 backend route tests
+Worker B：只整理 README / docs
+Worker C：只修 frontend lint / type 小问题
+Worker D：只做只读分析，不改文件
+```
+
+不适合并行的例子：
+
+```text
+多个 worker 同时改同一个文件
+数据库迁移
+权限 / 认证 / 审计逻辑
+部署脚本
+生产配置
+架构决策
+大范围重构
+```
+
+并行任务文件可以写成：
+
+```json
+{
+  "tasks": [
+    {
+      "id": "backend-tests",
+      "task": "Add focused tests for the selected backend helper.",
+      "scope": "Only edit tests/backend/**.",
+      "constraints": [
+        "Preserve existing test style.",
+        "Do not modify production code."
+      ],
+      "output": "Summarize changed files, tests run, and remaining issues."
+    },
+    {
+      "id": "docs-polish",
+      "task": "Polish the README section for the documented feature.",
+      "scope": "Only edit README.md and docs/**.",
+      "constraints": "Do not add secrets or credentials.",
+      "output": "Summarize changed files and unclear wording."
+    }
+  ]
+}
+```
+
+执行：
+
+```cmd
+node .\src\cli.js run-many --tasks parallel-tasks.json --parallel 3 --agent claude-minimax --json --config .\agent-router.config.json
+```
+
+`run-many` 会返回每个 worker 的结果，并给出汇总：
+
+```text
+totalTasks：任务总数
+okTasks：成功执行的 worker 数
+errorTasks：失败的 worker 数
+codexTasks：因为命中高风险关键词而保留给 Codex 的任务数
+```
+
+注意：并行执行的结果仍然不是最终交付。Codex 必须回收所有结果、检查 diff、解决冲突、跑最终测试。
+
 ## 直接使用 router 命令
 
 进入 router 目录：
@@ -174,6 +242,12 @@ node .\src\cli.js minimax --config .\agent-router.config.json
 
 ```cmd
 node .\src\cli.js run --agent claude-minimax --task "请只回复：MiniMax Claude Code OK" --json --config .\agent-router.config.json
+```
+
+并行执行多个独立小任务：
+
+```cmd
+node .\src\cli.js run-many --tasks parallel-tasks.json --parallel 3 --agent claude-minimax --json --config .\agent-router.config.json
 ```
 
 查看统计：

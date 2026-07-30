@@ -7,6 +7,7 @@ import {
   chooseRoute,
   DEFAULT_CONFIG,
   executeAgent,
+  executeManyTasks,
   getLogPath,
   isCommandAvailable,
   loadConfig,
@@ -96,6 +97,35 @@ async function main(argv) {
     }
     if (result.status !== "ok") {
       process.exitCode = result.exitCode || 1;
+    }
+    return;
+  }
+
+  if (command === "run-many") {
+    const tasksPath = flags.tasks || flags.file;
+    if (!tasksPath) {
+      throw new Error("Missing tasks file. Pass --tasks tasks.json.");
+    }
+    const tasksFile = path.isAbsolute(tasksPath) ? tasksPath : path.join(cwd, tasksPath);
+    const tasksInput = JSON.parse(fs.readFileSync(tasksFile, "utf8"));
+    const result = await executeManyTasks(tasksInput, config, {
+      agentName: flags.agent,
+      model: flags.model,
+      think: flags.think,
+      parallel: Number(flags.parallel || 2),
+      logPath,
+      cwd,
+      timeoutMs: Number(flags["timeout-ms"] || flags.timeoutMs || config.defaults?.timeoutMs || 0) || undefined
+    });
+
+    if (flags.json) {
+      printPayload(result, flags);
+      return;
+    }
+
+    console.log(formatRunMany(result));
+    if (result.status === "error") {
+      process.exitCode = 1;
     }
     return;
   }
@@ -222,6 +252,22 @@ function formatStats(summary, logPath) {
   ].join("\n");
 }
 
+function formatRunMany(result) {
+  const lines = [
+    `Run many: status=${result.status} parallel=${result.parallel}`,
+    `Tasks: total=${result.summary.totalTasks} ok=${result.summary.okTasks} error=${result.summary.errorTasks} codex=${result.summary.codexTasks}`
+  ];
+
+  for (const entry of result.results) {
+    lines.push(`- ${entry.taskId}: ${entry.status} ${entry.agent || ""}`.trimEnd());
+    if (entry.status === "codex") {
+      lines.push(`  reason: ${entry.reason}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 function printPayload(payload, flags, text = null) {
   if (flags.json) {
     console.log(JSON.stringify(payload, null, 2));
@@ -288,6 +334,7 @@ Commands:
   minimax              Show how to enable Claude Code through MiniMax
   route --task "..."   Decide whether Codex or an external agent should handle a task
   run --task "..."     Run the selected external agent and log usage
+  run-many --tasks f   Run independent tasks with a limited parallel worker pool
   stats                Summarize usage logs
   monitor              Start the local monitoring dashboard
 

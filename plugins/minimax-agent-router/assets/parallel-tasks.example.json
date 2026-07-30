@@ -1,0 +1,35 @@
+{
+  "tasks": [
+    {
+      "id": "backend-tests",
+      "task": "Add focused unit tests for the selected backend helper.",
+      "scope": "Only edit tests/backend/**.",
+      "constraints": [
+        "Preserve existing test style.",
+        "Do not modify production code.",
+        "Do not run destructive git commands."
+      ],
+      "output": "Summarize changed files, tests run, and remaining issues."
+    },
+    {
+      "id": "docs-polish",
+      "task": "Polish the README section for the documented feature.",
+      "scope": "Only edit README.md and docs/**.",
+      "constraints": [
+        "Keep the existing tone.",
+        "Do not add installation secrets or credentials."
+      ],
+      "output": "Summarize changed files and any unclear wording."
+    },
+    {
+      "id": "frontend-lint",
+      "task": "Fix straightforward lint and import-order issues in the selected frontend files.",
+      "scope": "Only edit app/**/*.tsx and lib/**/*.ts.",
+      "constraints": [
+        "Do not change UI behavior.",
+        "Stop if a fix requires product or design judgment."
+      ],
+      "output": "Summarize changed files, checks run, and remaining issues."
+    }
+  ]
+}

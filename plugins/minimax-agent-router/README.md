@@ -78,6 +78,37 @@ Constraints: 保持现有风格；不要运行破坏性 git 命令；不要碰�
 Output: 总结改了哪些文件、跑了哪些测试、还有什么问题。" --json --config .\agent-router.config.json
 ```
 
+并行委派多个互不冲突的小任务：
+
+```cmd
+node .\src\cli.js run-many --tasks parallel-tasks.json --parallel 3 --agent claude-minimax --json --config .\agent-router.config.json
+```
+
+`parallel-tasks.json` 可以写成对象：
+
+```json
+{
+  "tasks": [
+    {
+      "id": "backend-tests",
+      "task": "补 backend route 单元测试。",
+      "scope": "只允许修改 tests/backend/**。",
+      "constraints": "保持现有测试风格，不修改生产代码。",
+      "output": "总结改了哪些文件、跑了哪些测试、还有什么问题。"
+    },
+    {
+      "id": "docs-polish",
+      "task": "整理 README 的功能说明。",
+      "scope": "只允许修改 README.md 和 docs/**。",
+      "constraints": "不要写入任何密钥或凭据。",
+      "output": "总结改动和未确认问题。"
+    }
+  ]
+}
+```
+
+并行模式只适合文件范围隔离清楚的任务。不要用它处理权限、认证、审计、数据库迁移、部署、生产配置或大范围重构。
+
 查看统计：
 
 ```cmd
