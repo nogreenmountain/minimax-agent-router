@@ -15,6 +15,15 @@ Claude Code + MiniMax 是执行助手，适合处理边界明确的小任务：�
 
 MiniMax 的输出不是最终结果，必须由 Codex 检查后再采用。
 
+## v0.6.1：微调研护栏
+
+v0.6.1 根据真实并行调研反馈，避免把完整商业计划书、完整报告、同时覆盖“竞品 + 商业化 + 合规”的宽任务直接派给 MiniMax，减少 5 分钟超时后没有可用产出的情况。
+
+- 宽调研会留给 Codex，返回 `signal=broad-research`。
+- MiniMax 更适合执行拆小后的 micro-research：3 个海外工具、3 个国内工具、中国合规清单等。
+- 每个 research worker 应限制在 3-5 分钟内，只输出 5-8 条有证据支撑的要点。
+- 通过 gate 的只读调研 prompt 会自动加入 `Micro-research mode`，要求不要写完整报告。
+
 ## v0.6：可靠委派
 
 v0.6.0 的目标是让 Henchman 从“能跑”变成“真的能帮 Codex 省时间”：

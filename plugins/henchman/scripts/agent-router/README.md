@@ -4,6 +4,26 @@ This runtime is bundled by the `henchman` Codex plugin.
 
 The runtime enables a task-fit gate by default. Editing work needs a narrow scope, code work needs an exact test command, each worker has a five-minute default budget, and successful runs remain pending Codex review. On first use, the router automatically installs a pinned Headroom runtime into its own user-level virtual environment. The managed proxy then compresses Claude Code context and provides project-isolated persistent memory.
 
+## Micro Research
+
+Henchman delegates research only when it is small enough to finish usefully inside the worker budget. Complete business plans, full reports, or combined competitor + monetization + compliance tasks stay with Codex until split into micro-research.
+
+Use one bounded research task per worker:
+
+```json
+{
+  "id": "overseas-tools",
+  "kind": "research",
+  "readOnly": true,
+  "task": "Research 3 overseas image tool competitors.",
+  "maxFindings": 8,
+  "estimatedMinutes": 4,
+  "output": "Return 5-8 evidence-backed bullets. Do not write a full report."
+}
+```
+
+When accepted, the generated worker prompt includes `Micro-research mode` and asks for concise evidence-backed bullets so Codex can verify and reuse the result quickly. Unsplit broad research is routed back to Codex with `signal=broad-research`.
+
 ## Headroom
 
 Normal MiniMax tasks and `headroom start` automatically install `headroom-ai[proxy]==0.33.0` into `~/.agent-router/headroom/venv` when it is missing. Concurrent first-use workers share an installation lock. Use `setup` only to prewarm or repair the managed runtime:

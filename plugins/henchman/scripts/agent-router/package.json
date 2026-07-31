@@ -1,6 +1,6 @@
 {
   "name": "henchman-agent-router-runtime",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "description": "Task-fit gate, Headroom-compressed MiniMax routing, project-isolated worker memory, bounded parallel execution, and monitoring for Codex workflows.",
   "type": "module",

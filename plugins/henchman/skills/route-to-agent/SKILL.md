@@ -25,7 +25,8 @@ MiniMax output is a draft. A successful process exit means only `reviewStatus=pe
 7. Headroom auto-installs its pinned runtime on the first compressed delegation. Treat the first run as a dependency warm-up, observe installation events, and use `headroom setup` only for optional prewarming or repair.
 8. Invoke `run` or `run-many` only when the route returns `assessment.decision=delegate` or a batch entry returns `decision=delegate`.
 9. Expect `run` / `run-many` to preflight workspace readability before launching MiniMax. If the result is `status=blocked, reason=workspace-read-denied`, fix the workspace or scope instead of retrying the model.
-10. Inspect every changed file and rerun verification as Codex.
+10. For research, delegate only micro-research. Keep complete business plans, full reports, or combined competitor + monetization + compliance work with Codex until split into bounded 5-8 bullet tasks.
+11. Inspect every changed file and rerun verification as Codex.
 
 Do not bypass a Codex decision by specifying `--agent`. The safety gate still owns the decision.
 
@@ -40,10 +41,13 @@ Delegate bounded drafts for:
 - Repetitive implementations behind an existing interface.
 - Read-only code review or analysis that Codex will verify.
 - Read-only image processing research, such as comparing OpenCV, SAM, vectorizer, segmentation, OCR, or image pipeline libraries.
+- Micro-research that asks for a bounded set of evidence, such as 3 overseas tools, 3 domestic tools, or one compliance checklist with `maxFindings` no higher than 8.
 
 Use parallel workers only for independent tasks with non-overlapping scopes. Research and documentation are good parallel candidates. Core implementation should normally be split into sequential phases.
 
 Do not delegate image generation, image editing, subjective judgment on user-uploaded images, or final visual acceptance. These stay with Codex or a dedicated visual tool.
+
+Do not delegate broad research that asks for a complete business plan, full report, or combined competitor + monetization + compliance answer. Split it into micro-research tasks first. The router marks unsplit broad research with `signal=broad-research`.
 
 ## Headroom Policy
 
@@ -107,11 +111,26 @@ Prefer a structured task object:
 
 Use `kind=research` plus `readOnly=true` for analysis that must not edit files. For unfamiliar third-party APIs, include a verified call in `apiExamples`; otherwise keep implementation with Codex.
 
+For MiniMax research, add `maxFindings` and keep it small:
+
+```json
+{
+  "id": "overseas-image-tools",
+  "kind": "research",
+  "readOnly": true,
+  "task": "Research 3 overseas image tool competitors.",
+  "maxFindings": 8,
+  "estimatedMinutes": 4,
+  "output": "Return 5-8 evidence-backed bullets. Do not write a full report."
+}
+```
+
 The router automatically adds these prompt guardrails:
 
 - Modify only `scope`.
 - Create no scratch, temp, or helper files outside `scope`.
 - Do not expand into new modules.
+- For read-only research, use Micro-research mode: return 5-8 evidence-backed bullets and do not write a full report.
 - Run the exact `testCommand` and paste real output.
 - Report uncertainty and partial work.
 - Remind the worker that Codex will inspect and verify the result.

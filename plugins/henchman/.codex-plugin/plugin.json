@@ -1,15 +1,15 @@
 {
   "name": "henchman",
-  "version": "0.6.0+codex.20260731110812",
-  "description": "Reliable delegation for Claude Code backed by MiniMax: workspace-readable workers, batch-aware routing, smarter read-only research gates, clearer Headroom status, utility scoring, and mandatory Codex verification.",
+  "version": "0.6.1+codex.20260731155209",
+  "description": "Reliable delegation for Claude Code backed by MiniMax: workspace-readable workers, batch-aware routing, micro-research guardrails, clearer Headroom status, utility scoring, and mandatory Codex verification.",
   "author": {
     "name": "nogreenmountain"
   },
   "skills": "./skills/",
   "interface": {
     "displayName": "Henchman",
-    "shortDescription": "Reliable MiniMax delegation with workspace access, batch routing, Headroom clarity, and Codex review.",
-    "longDescription": "Henchman is a Codex plugin that first assesses task fit, then delegates only low-risk research, documentation, tests, read-only review, and narrowly scoped mechanical implementation to Claude Code CLI through MiniMax. v0.6.0 focuses on reliable delegation: workers receive the current workspace as an allowed Claude Code directory, run and run-many preflight readable scopes before spending MiniMax tokens, route understands tasks[] batches, read-only image research is no longer blocked by the word image, Headroom doctor explains on-demand startup and degraded semantic memory, and each run reports utility signals so Codex can judge whether the worker result is worth reusing. Codex keeps ownership of architecture, unfamiliar APIs, platform integration, security, deployment, and final verification.",
+    "shortDescription": "Reliable MiniMax delegation with micro-research routing, workspace access, Headroom clarity, and Codex review.",
+    "longDescription": "Henchman is a Codex plugin that first assesses task fit, then delegates only low-risk research, documentation, tests, read-only review, and narrowly scoped mechanical implementation to Claude Code CLI through MiniMax. v0.6.1 adds micro-research guardrails: broad business-plan or full-report research stays with Codex until it is split into bounded workers that return 5-8 evidence-backed bullets, so run-many avoids wasting time on oversized research tasks. Workers receive the current workspace as an allowed Claude Code directory, run and run-many preflight readable scopes before spending MiniMax tokens, route understands tasks[] batches, read-only image research is not blocked by the word image, Headroom doctor explains on-demand startup and degraded semantic memory, and each run reports utility signals so Codex can judge whether the worker result is worth reusing. Codex keeps ownership of architecture, unfamiliar APIs, platform integration, security, deployment, and final verification.",
     "developerName": "nogreenmountain",
     "category": "Productivity",
     "capabilities": [

@@ -239,6 +239,32 @@ describe("assessTask", () => {
     assert.equal(assessment.decision, "codex");
     assert.ok(assessment.signals.includes("image-owned"));
   });
+
+  it("keeps broad business-plan research with Codex until it is split into micro-research", () => {
+    const assessment = assessTask({
+      kind: "research",
+      readOnly: true,
+      task: "Create a complete business plan covering competitors, monetization, and compliance."
+    }, DEFAULT_CONFIG);
+
+    assert.equal(assessment.decision, "codex");
+    assert.ok(assessment.signals.includes("broad-research"));
+    assert.match(assessment.recommendations.join(" "), /micro-research/i);
+  });
+
+  it("accepts bounded micro-research with an explicit findings limit", () => {
+    const assessment = assessTask({
+      kind: "research",
+      readOnly: true,
+      task: "Research overseas image tool competitors.",
+      maxFindings: 8,
+      output: "Return 5-8 evidence bullets.",
+      estimatedMinutes: 4
+    }, DEFAULT_CONFIG);
+
+    assert.equal(assessment.decision, "delegate");
+    assert.equal(assessment.fit, "good");
+  });
 });
 
 describe("routeTasks", () => {
@@ -320,6 +346,19 @@ describe("formatManyTaskPrompt", () => {
     assert.match(prompt, /client\.render\(\{ blob, position \}\)/);
     assert.match(prompt, /Paste the real command output/);
     assert.match(prompt, /Codex will inspect the diff and verify the result/);
+  });
+
+  it("turns read-only research into a bounded micro-brief prompt", () => {
+    const prompt = formatManyTaskPrompt({
+      kind: "research",
+      readOnly: true,
+      task: "Research 3 overseas image tool competitors.",
+      maxFindings: 6
+    });
+
+    assert.match(prompt, /Micro-research mode/);
+    assert.match(prompt, /5-6 evidence-backed bullets/);
+    assert.match(prompt, /Do not write a full report/);
   });
 });
 

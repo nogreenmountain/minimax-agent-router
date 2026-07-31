@@ -11,6 +11,16 @@ Codex -> Task Gate -> Claude Code CLI -> Headroom 本地代理 -> MiniMax
 
 简单说：Codex 当负责人，MiniMax 当执行助手，Headroom 负责压缩重复上下文并让同一项目的 worker 共享长期记忆。
 
+## v0.6.1 更新方向：微调研护栏
+
+这版根据真实使用反馈修正一个浪费时间的问题：两个“大而全调研”worker 并行跑到 5 分钟超时，却没有可采用输出。
+
+- 完整商业计划书、完整报告、同时覆盖“竞品 + 商业化 + 合规”的大任务默认留给 Codex，不直接派给 MiniMax。
+- 只读调研必须拆成 micro-research：例如“3 个海外工具”“3 个国内工具”“中国合规清单”。
+- 每个 MiniMax 调研任务建议限制为 3-5 分钟，并要求输出 5-8 条有证据支撑的要点，不写完整计划书。
+- `route` 和 `run-many` 会识别这类宽调研；未拆小会返回 `decision=codex`、`signal=broad-research`，并建议拆成微调研。
+- 通过 gate 的只读 research prompt 会自动加入 `Micro-research mode`，要求 worker 产出短要点和证据，方便 Codex 快速判断是否可采纳。
+
 ## v0.6 更新方向：Reliable Delegation Release
 
 这一版重点不是加更多 agent，而是让 MiniMax 真正帮 Codex 省时间：

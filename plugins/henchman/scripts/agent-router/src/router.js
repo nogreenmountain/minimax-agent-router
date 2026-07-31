@@ -69,6 +69,21 @@ export const DEFAULT_CONFIG = {
         "end-to-end implementation",
         "large refactor"
       ],
+      broadResearchKeywords: [
+        "complete business plan",
+        "full business plan",
+        "business plan",
+        "full report",
+        "comprehensive report",
+        "competitors, monetization, and compliance",
+        "competitors + monetization + compliance",
+        "完整商业计划书",
+        "完整商业计划",
+        "商业计划书",
+        "完整报告",
+        "竞品、商业化、合规",
+        "竞品 + 商业化 + 合规"
+      ],
       unfamiliarApiKeywords: [
         "陌生 api",
         "新的 api",
@@ -293,6 +308,13 @@ export function assessTask(task, config = DEFAULT_CONFIG) {
   if (broadKeyword) {
     reasons.push(`task is too broad for a short MiniMax worker: ${broadKeyword}`);
     signals.push("broad-task");
+  }
+
+  const broadResearchKeyword = findKeyword(lower, gate.broadResearchKeywords || []);
+  if (descriptor.readOnly && descriptor.kind === "research" && broadResearchKeyword && !descriptor.researchBounded) {
+    reasons.push(`research task is too broad for one MiniMax worker: ${broadResearchKeyword}`);
+    recommendations.push("Split this into micro-research tasks, for example 3 competitors or one compliance checklist with 5-8 evidence bullets.");
+    signals.push("broad-research");
   }
 
   if (descriptor.estimatedMinutes && descriptor.estimatedMinutes > gate.maxEstimatedMinutes) {
@@ -885,6 +907,7 @@ export function formatManyTaskPrompt(task) {
   if (typeof task === "string") {
     return task;
   }
+  const descriptor = normalizeTaskDescriptor(task);
   const lines = [];
   if (task.workspace) {
     lines.push(`Workspace: ${task.workspace}`, "");
@@ -898,6 +921,17 @@ export function formatManyTaskPrompt(task) {
   }
   if (task.apiExamples) {
     lines.push("", "Verified API examples:", formatTaskField(task.apiExamples));
+  }
+  if (descriptor.readOnly && descriptor.kind === "research") {
+    const findingsLimit = descriptor.maxFindings || 8;
+    const lowerLimit = Math.min(5, findingsLimit);
+    lines.push(
+      "",
+      "Micro-research mode:",
+      `Return ${lowerLimit}-${findingsLimit} evidence-backed bullets.`,
+      "Keep each bullet concise and cite the file, command output, or source signal that supports it.",
+      "Do not write a full report, full plan, or final recommendation."
+    );
   }
   const constraints = [
     "Only modify files listed in Scope.",
@@ -1117,8 +1151,11 @@ function normalizeTaskDescriptor(task) {
   const scope = toArray(objectTask.scope || extractTaskSection(text, "scope"));
   const testCommand = objectTask.testCommand || extractTaskSection(text, "test command") || extractTaskSection(text, "test");
   const apiExamples = toArray(objectTask.apiExamples || extractTaskSection(text, "api examples"));
+  const output = toArray(objectTask.output || extractTaskSection(text, "output"));
   const estimatedMinutes = Number(objectTask.estimatedMinutes || 0) || null;
+  const maxFindings = Number(objectTask.maxFindings || objectTask.max_findings || 0) || null;
   const requiresTest = ["tests", "small-code", "mechanical", "bug-fix", "component"].includes(kind);
+  const researchBounded = Boolean(maxFindings && maxFindings <= 8) || hasBoundedResearchOutput([text, ...output].join("\n"));
   return {
     text,
     kind,
@@ -1127,7 +1164,10 @@ function normalizeTaskDescriptor(task) {
     scope: scope.filter(Boolean),
     testCommand: testCommand ? String(testCommand).trim() : "",
     apiExamples: apiExamples.filter(Boolean),
+    output: output.filter(Boolean),
     estimatedMinutes,
+    maxFindings,
+    researchBounded,
     requiresTest
   };
 }
@@ -1174,6 +1214,15 @@ function findCodexKeyword(text, keywords = [], descriptor) {
     return keyword;
   }
   return null;
+}
+
+function hasBoundedResearchOutput(text) {
+  const normalized = String(text || "").toLowerCase();
+  return (
+    /\b[1-8]\s*(?:evidence[- ]backed\s+)?(?:bullets?|findings?|points?)\b/.test(normalized) ||
+    /\b5\s*(?:-|~|to)\s*8\b/.test(normalized) ||
+    /[1-8]\s*(?:条|个).{0,8}(?:要点|发现|结论)/.test(normalized)
+  );
 }
 
 function checkScopeEntry(entry, workspaceRoot, descriptor) {
