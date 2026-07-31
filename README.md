@@ -1,6 +1,6 @@
-# MiniMax Agent Router for Codex
+# Henchman for Codex
 
-这是一个 Codex 插件，用来把低风险、边界清楚的编码杂活交给 Claude Code CLI 执行，并让 Claude Code 走 MiniMax 的 Anthropic 兼容接口。
+Henchman 是一个 Codex 插件，用来把低风险、边界清楚的编码杂活交给 Claude Code CLI 执行，并让 Claude Code 走 MiniMax 的 Anthropic 兼容接口。
 
 整体链路是：
 
@@ -11,10 +11,15 @@ Codex -> Task Gate -> Claude Code CLI -> Headroom 本地代理 -> MiniMax
 
 简单说：Codex 当负责人，MiniMax 当执行助手，Headroom 负责压缩重复上下文并让同一项目的 worker 共享长期记忆。
 
-## v0.4 更新方向：压缩 Token + 项目级跨 Agent 记忆
+## v0.5 更新方向：Headroom 随插件首次使用自动安装
 
-这一版融合了开源项目 [Headroom](https://github.com/headroomlabs-ai/headroom)：
+这一版把开源项目 [Headroom](https://github.com/headroomlabs-ai/headroom) 运行时绑定进插件流程：
 
+- 新电脑只需安装插件并准备好 Python；第一次执行 MiniMax/Headroom 任务时，路由器会自动创建专用虚拟环境并安装固定版本 `headroom-ai[proxy]==0.33.0`。
+- 自动安装目录是用户级 `~/.agent-router/headroom/venv`，不会污染项目 Python 环境，也不会修改全局 Claude Code 配置。
+- 多个 worker 同时首次启动时会共用跨进程安装锁，只安装一次；其他 worker 等待安装完成后再继续。
+- 首次安装等待不计入 worker 的 5 分钟执行预算；安装完成或失败后才重新开始正常任务计时。
+- Headroom 冷启动默认等待 5 分钟，给 ONNX embedding 模型初始化留下空间。
 - Claude Code 不再直接连接 MiniMax，而是优先经过路由器管理的本地 Headroom 代理。
 - Headroom 使用 `coding` 节省配置压缩重复上下文、工具输出和历史信息；插件不启用输出塑形，优先保护交付质量。
 - 每个工作区使用独立 SQLite 记忆库。同一项目的后续 worker 可以召回稳定事实和历史决策，不同项目不能共享记忆。
@@ -22,8 +27,10 @@ Codex -> Task Gate -> Claude Code CLI -> Headroom 本地代理 -> MiniMax
 - 路由器会关闭 Headroom 仅适用于 Anthropic 一方接口的 `tool_search`，避免 MiniMax 兼容网关拒绝工具 schema；上下文压缩、CCR 和项目记忆仍保持启用。
 - worker 保存的结论统一视为 `UNVERIFIED_WORKER` 背景信息，必须依据当前代码重新核验。
 - 密钥、凭据、完整日志、临时错误和一次性任务指令禁止写入记忆。
-- `auto` 模式下，Headroom 未安装或启动失败时会明确标记 `fallback-direct`，再直连 MiniMax；需要强制压缩时可使用 `--headroom required`。
+- `auto` 模式下，自动安装或启动失败时会明确标记 `fallback-direct`，再直连 MiniMax；需要强制压缩时可使用 `--headroom required`。
 - JSON 结果和 `stats` 会显示 Headroom 是否启用、本次请求数和估算节省 Token；Headroom telemetry 默认关闭。
+- `headroom doctor` 会区分 `installed`、`runnable`、`enabled` 和 `status`；`installed=true, runnable=true, status=stopped` 表示已安装且会按任务启动，不是故障。
+- 如果日志出现非致命 embedder warm-up 失败，结果会标记 `memoryStatus=degraded`：代理和 MiniMax 仍可使用，但语义记忆召回可能降级。
 
 Headroom 只作为本地代理和记忆层，不会修改全局 Claude Code 配置，也不会取代 Codex 的审查和验收职责。
 
@@ -70,7 +77,7 @@ MiniMax 的输出只当草稿，Codex 需要继续检查 diff、跑测试，再�
 - Node.js，并且 `node` 可以在终端里运行。
 - Claude Code CLI，并且 `claude` 可以在终端里运行。
 - MiniMax Subscription Key。
-- 推荐安装 Python 3.10 或更高版本，用于路由器托管 Headroom。未安装时插件仍可在 `auto` 模式直连 MiniMax。
+- Python 3.10 或更高版本，并确保 Windows 的 `py -3` 或其他平台的 `python3` 可以运行。它只用于路由器首次自动安装和托管 Headroom；缺失时 `auto` 模式仍可直连 MiniMax，但没有压缩和项目记忆。
 
 不要把 MiniMax key 写进配置文件、README 或 Git 记录里，只放环境变量。
 
@@ -79,13 +86,13 @@ MiniMax 的输出只当草稿，Codex 需要继续检查 diff、跑测试，再�
 在目标电脑打开 CMD 或 PowerShell，先添加这个 GitHub 仓库作为 Codex 插件市场：
 
 ```cmd
-codex plugin marketplace add nogreenmountain/minimax-agent-router --ref main --sparse .agents/plugins --sparse plugins/minimax-agent-router
+codex plugin marketplace add nogreenmountain/minimax-agent-router --ref main --sparse .agents/plugins --sparse plugins/henchman
 ```
 
 然后安装插件：
 
 ```cmd
-codex plugin add minimax-agent-router@nogreenmountain
+codex plugin add henchman@nogreenmountain
 ```
 
 检查插件：
@@ -97,22 +104,49 @@ codex plugin list
 看到类似下面内容就说明插件已经安装：
 
 ```text
-minimax-agent-router@nogreenmountain installed, enabled
+henchman@nogreenmountain installed, enabled
 ```
 
 安装后建议重启 Codex，这样新任务里才能加载到插件技能。
 
-### 安装 Headroom 运行时
+### 从 v0.4 升级
 
-进入插件中的 router 目录，执行一次显式安装。它会创建路由器自己的 Python 虚拟环境，不污染项目环境：
+v0.5 起插件 ID 从 `minimax-agent-router` 改为 `henchman`。升级 marketplace 后，请在 Codex 插件管理中卸载旧插件，再安装：
 
 ```cmd
-cd plugins\minimax-agent-router\scripts\agent-router
+codex plugin add henchman@nogreenmountain
+```
+
+底层仍复用用户目录下的 `.agent-router` 状态，因此已有 Headroom 虚拟环境和项目记忆不会因为改名而丢失。
+
+### Headroom 会在首次使用时自动安装
+
+不需要再单独安装 Headroom。第一次执行合适的 MiniMax 委派或 `headroom start` 时，插件会自动：
+
+1. 检查用户目录下的专用 Headroom 运行时。
+2. 创建 `~/.agent-router/headroom/venv`。
+3. 安装固定版本 `headroom-ai[proxy]==0.33.0`。
+4. 启动本地回环代理，然后继续原任务。
+
+首次安装需要下载 Python 包，通常比后续任务慢。终端会显示 `[headroom] installing`、`waiting` 或 `installed` 进度。想在正式使用前预热，或修复损坏的虚拟环境时，仍可手动执行：
+
+```cmd
+cd plugins\henchman\scripts\agent-router
 node .\src\cli.js headroom setup --config .\agent-router.config.json
 node .\src\cli.js headroom doctor --json --config .\agent-router.config.json
 ```
 
-插件固定安装经过本版本验证的 `headroom-ai[proxy]==0.33.0`。不会在第一次委派时静默下载大型依赖。
+如需禁止自动安装，可设置 `AGENT_ROUTER_HEADROOM_AUTO_INSTALL=false`。这时 `auto` 模式找不到 Headroom 会直接回退 MiniMax；`required` 模式会报错停止。
+
+### Headroom 自动安装排障
+
+- 提示找不到 `py` 或 `python3`：安装 Python 3.10+，Windows 安装时勾选 Python Launcher，然后重新打开终端或 Codex。
+- 提示创建虚拟环境失败：确认 Python 自带 `venv`；Linux 可能需要安装对应的 `python3-venv` 包。
+- 提示 pip 下载失败：检查网络、代理、证书和 PyPI 访问能力，再运行一次 `headroom setup`。
+- HuggingFace ONNX 模型下载超时：代理通常仍可工作，`doctor`/任务结果会显示 `memoryStatus=degraded`。可以配置可用的 HuggingFace mirror 或预先缓存 `Qdrant/all-MiniLM-L6-v2-onnx`，但插件不会强制预下载，以免受限网络阻塞整个代理。
+- 安装中断：关闭仍在安装的旧进程后重试。路由器会识别死亡或陈旧的安装锁；不要在仍有安装进程运行时手动删除目录。
+- 查看状态：运行 `headroom doctor --json`，确认 `installed=true`、`autoInstall=true` 和固定包版本。
+- Windows 日志按 UTF-8 写入；PowerShell 查看原始日志时建议使用 `Get-Content -Encoding utf8 <日志路径>`。
 
 ## 设置 MiniMax Key
 
@@ -149,13 +183,13 @@ MINIMAX_SUBSCRIPTION_KEY
 重启 Codex 后，可以直接问 Codex：
 
 ```text
-用 minimax-agent-router 打印一个 hi
+用 henchman 打印一个 hi
 ```
 
 也可以在克隆下来的仓库里直接跑 router：
 
 ```cmd
-cd plugins\minimax-agent-router\scripts\agent-router
+cd plugins\henchman\scripts\agent-router
 node .\src\cli.js doctor --config .\agent-router.config.json
 node .\src\cli.js run --agent claude-minimax --task "请只回复：hi" --json --config .\agent-router.config.json
 ```
@@ -250,7 +284,7 @@ node .\src\cli.js route --task-file single-task.json --json --config .\agent-rou
 node .\src\cli.js run --task-file single-task.json --agent claude-minimax --json --config .\agent-router.config.json
 ```
 
-仓库内的 `plugins/minimax-agent-router/assets/single-task.example.json` 可以直接作为模板。
+仓库内的 `plugins/henchman/assets/single-task.example.json` 可以直接作为模板。
 
 ## 并行子智能体模式
 
@@ -329,7 +363,7 @@ pendingReviewTasks：等待 Codex 检查和复测的任务数
 进入 router 目录：
 
 ```cmd
-cd plugins\minimax-agent-router\scripts\agent-router
+cd plugins\henchman\scripts\agent-router
 ```
 
 查看可用代理：
@@ -394,14 +428,14 @@ http://127.0.0.1:8787
 运行测试：
 
 ```cmd
-cd plugins\minimax-agent-router\scripts\agent-router
+cd plugins\henchman\scripts\agent-router
 npm test
 ```
 
 如果本机有 Codex 插件校验脚本，也可以校验插件：
 
 ```cmd
-python path\to\plugin-creator\scripts\validate_plugin.py plugins\minimax-agent-router
+python path\to\plugin-creator\scripts\validate_plugin.py plugins\henchman
 ```
 
 ## 安全提醒

@@ -457,6 +457,72 @@ describe("executeAgent", () => {
 });
 
 describe("executeAgentAsync", () => {
+  it("does not charge first-use Headroom installation against the worker timeout", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-headroom-install-timeout-"));
+    const script = [
+      "process.stderr.write('[headroom] Headroom is not installed; automatically installing headroom-ai[proxy]==0.33.0.\\n');",
+      "setTimeout(() => {",
+      "  process.stderr.write('[headroom] Headroom installation completed: headroom-ai[proxy]==0.33.0.\\n');",
+      "  setTimeout(() => process.stdout.write('done'), 20);",
+      "}, 150);"
+    ].join("\n");
+    const config = {
+      defaults: { timeoutMs: 100 },
+      headroom: { mode: "auto", autoInstall: true, installWaitMs: 400 },
+      agents: {
+        "claude-minimax": {
+          command: process.execPath,
+          args: ["-e", script],
+          promptMode: "stdin",
+          pricing: { inputPer1k: 0, outputPer1k: 0 }
+        }
+      }
+    };
+
+    const result = await executeAgentAsync("hello", config, {
+      agentName: "claude-minimax",
+      model: "test-model",
+      think: "low",
+      cwd: tmpDir
+    });
+
+    assert.equal(result.status, "ok");
+    assert.equal(result.stdout, "done");
+  });
+
+  it("restores the normal worker timeout after Headroom installation completes", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-headroom-task-timeout-"));
+    const script = [
+      "process.stderr.write('[headroom] Headroom is not installed; automatically installing headroom-ai[proxy]==0.33.0.\\n');",
+      "setTimeout(() => {",
+      "  process.stderr.write('[headroom] Headroom installation completed: headroom-ai[proxy]==0.33.0.\\n');",
+      "  setTimeout(() => process.stdout.write('late'), 150);",
+      "}, 150);"
+    ].join("\n");
+    const config = {
+      defaults: { timeoutMs: 100 },
+      headroom: { mode: "auto", autoInstall: true, installWaitMs: 400 },
+      agents: {
+        "claude-minimax": {
+          command: process.execPath,
+          args: ["-e", script],
+          promptMode: "stdin",
+          pricing: { inputPer1k: 0, outputPer1k: 0 }
+        }
+      }
+    };
+
+    const result = await executeAgentAsync("hello", config, {
+      agentName: "claude-minimax",
+      model: "test-model",
+      think: "low",
+      cwd: tmpDir
+    });
+
+    assert.equal(result.status, "timed-out");
+    assert.equal(result.partialChangesPossible, true);
+  });
+
   it("marks timed-out work as possibly partial", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-timeout-"));
     const config = {

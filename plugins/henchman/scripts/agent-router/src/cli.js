@@ -14,7 +14,7 @@ import { resolveMiniMaxConnection } from "./claude-settings.js";
 import {
   chooseRoute,
   DEFAULT_CONFIG,
-  executeAgent,
+  executeAgentAsync,
   executeManyTasks,
   formatManyTaskPrompt,
   getLogPath,
@@ -86,7 +86,7 @@ async function main(argv) {
     }
 
     const prompt = typeof task === "string" ? task : formatManyTaskPrompt(task);
-    const result = executeAgent(prompt, config, {
+    const result = await executeAgentAsync(prompt, config, {
       ...route,
       logPath,
       cwd,
@@ -298,7 +298,7 @@ async function handleHeadroomCommand(subcommand, config, flags, cwd) {
       ...configuredHeadroom,
       upstreamUrl: connection.baseUrl,
       mode: "required"
-    });
+    }, { onInstallEvent: printHeadroomInstallEvent });
     printPayload(result, flags, formatHeadroomStatus(result));
     return;
   }
@@ -332,7 +332,37 @@ function formatHeadroomStatus(status) {
   if (status.tokensSaved !== undefined) {
     lines.push(`Tokens saved: ${status.tokensSaved}`);
   }
+  if (status.runnable !== undefined) {
+    lines.push(`Runnable: ${status.runnable ? "yes" : "no"}`);
+  }
+  if (status.note) {
+    lines.push(`Note: ${status.note}`);
+  }
+  if (status.memoryStatus) {
+    lines.push(`Memory: ${status.memoryStatus}`);
+  }
+  if (status.memoryNote) {
+    lines.push(`Memory note: ${status.memoryNote}`);
+  }
+  if (status.autoInstall !== undefined) {
+    lines.push(`Auto install: ${status.autoInstall ? "enabled" : "disabled"}`);
+  }
+  if (status.packageSpec) {
+    lines.push(`Package: ${status.packageSpec}`);
+  }
   return lines.join("\n");
+}
+
+function printHeadroomInstallEvent(event) {
+  const messages = {
+    waiting: `Headroom installation is already running; waiting for ${event.packageSpec}.`,
+    installing: `Headroom is not installed; automatically installing ${event.packageSpec}.`,
+    installed: `Headroom installation completed: ${event.packageSpec}.`,
+    failed: `Headroom installation failed for ${event.packageSpec}: ${event.error || "unknown error"}`
+  };
+  if (messages[event.status]) {
+    console.error(`[headroom] ${messages[event.status]}`);
+  }
 }
 
 function formatRunMany(result) {

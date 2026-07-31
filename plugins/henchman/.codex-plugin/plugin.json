@@ -1,0 +1,28 @@
+{
+  "name": "henchman",
+  "version": "0.5.0+codex.20260731023936",
+  "description": "Delegate only well-fitted chores to Claude Code backed by MiniMax, with task gating, first-use Headroom installation, token compression, project-isolated persistent worker memory, bounded parallelism, and mandatory Codex verification.",
+  "author": {
+    "name": "nogreenmountain"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Henchman",
+    "shortDescription": "A guarded MiniMax worker pool with auto-installed compression and project memory.",
+    "longDescription": "Henchman is a Codex plugin that first assesses task fit, then delegates only low-risk research, documentation, tests, read-only review, and narrowly scoped mechanical implementation to Claude Code CLI through MiniMax. On first use, it automatically installs a pinned Headroom runtime into its own user-level virtual environment, then uses the local proxy to reduce repeated context and give workers persistent project-isolated memory without changing global Claude settings. It enforces a five-minute default budget, bounded parallel workers, progress events, secret-free statistics, and pending-Codex review status. Codex keeps ownership of architecture, unfamiliar APIs, platform integration, security, deployment, and final verification.",
+    "developerName": "nogreenmountain",
+    "category": "Productivity",
+    "capabilities": [
+      "Write",
+      "Local"
+    ],
+    "defaultPrompt": [
+      "Use Henchman for safe MiniMax coding chores",
+      "Check whether this task is suitable for MiniMax",
+      "Check if claude-minimax is ready",
+      "Check Headroom compression and project memory",
+      "Delegate this small test fix",
+      "Run these independent chores in parallel"
+    ]
+  }
+}

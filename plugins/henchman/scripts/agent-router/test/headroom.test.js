@@ -9,7 +9,9 @@ import {
   buildProxyEnvironment,
   diffHeadroomStats,
   ensureHeadroomProxy,
+  ensureHeadroomRuntime,
   extractHeadroomStats,
+  getHeadroomStatus,
   getWorkspaceIdentity,
   normalizeHeadroomConfig,
   resolveProxyPid,
@@ -73,6 +75,16 @@ describe("Headroom workspace isolation", () => {
     assert.throws(() => normalizeHeadroomConfig({ host: "0.0.0.0" }), /loopback/i);
   });
 
+  it("enables pinned Headroom auto-install by default and allows an environment opt-out", () => {
+    const defaults = normalizeHeadroomConfig({});
+    assert.equal(defaults.autoInstall, true);
+    assert.equal(defaults.startupTimeoutMs, 300000);
+    assert.equal(
+      normalizeHeadroomConfig({}, { AGENT_ROUTER_HEADROOM_AUTO_INSTALL: "false" }).autoInstall,
+      false
+    );
+  });
+
   it("disables Anthropic-only tool search for MiniMax-compatible gateways", () => {
     const workspace = "C:\\work\\alpha";
     const config = normalizeHeadroomConfig({
@@ -86,10 +98,46 @@ describe("Headroom workspace isolation", () => {
 
     assert.equal(env.HEADROOM_TOOL_SEARCH, "0");
     assert.equal(env.MINIMAX_API_KEY, undefined);
+    assert.equal(env.PYTHONIOENCODING, "utf-8");
+    assert.equal(env.PYTHONUTF8, "1");
   });
 });
 
 describe("Headroom reporting", () => {
+  it("reports an installed stopped runtime as runnable and explains on-demand startup", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "headroom-runnable-status-"));
+    const status = await getHeadroomStatus(workspace, {
+      command: process.execPath,
+      stateRoot: path.join(workspace, "state")
+    });
+
+    assert.equal(status.installed, true);
+    assert.equal(status.runnable, true);
+    assert.equal(status.status, "stopped");
+    assert.match(status.note, /starts on demand/i);
+  });
+
+  it("reports non-fatal embedding warm-up failures as degraded memory", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "headroom-memory-degraded-"));
+    const config = {
+      command: process.execPath,
+      stateRoot: path.join(workspace, "state")
+    };
+    const paths = resolveHeadroomPaths(workspace, config);
+    fs.mkdirSync(paths.projectStateDir, { recursive: true });
+    fs.writeFileSync(
+      paths.stderrLog,
+      "Memory: embedder warm-up failed (non-fatal)\nMemory: ENABLED\n",
+      "utf8"
+    );
+
+    const status = await getHeadroomStatus(workspace, config);
+
+    assert.equal(status.runnable, true);
+    assert.equal(status.memoryStatus, "degraded");
+    assert.match(status.memoryNote, /proxy remains usable/i);
+  });
+
   it("prefers the actual proxy PID reported by Headroom health", () => {
     assert.equal(resolveProxyPid({ config: { pid: 5432 } }, 1234), 5432);
     assert.equal(resolveProxyPid({ status: "healthy" }, 1234), 1234);
@@ -148,9 +196,111 @@ describe("Headroom reporting", () => {
 });
 
 describe("Headroom proxy lifecycle", () => {
+  it("explains ONNX memory warm-up when a cold start times out", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "headroom-onnx-timeout-"));
+    const script = path.join(workspace, "slow-headroom.cjs");
+    fs.writeFileSync(
+      script,
+      "process.stderr.write('Loading ONNX embedding model (all-MiniLM-L6-v2, ~86MB)...\\n'); setInterval(() => {}, 1000);",
+      "utf8"
+    );
+
+    const result = await ensureHeadroomProxy(workspace, {
+      mode: "auto",
+      autoInstall: false,
+      command: process.execPath,
+      commandArgs: [script],
+      stateRoot: path.join(workspace, "state"),
+      startupTimeoutMs: 100,
+      portRangeStart: 22100,
+      portRangeSize: 20
+    });
+
+    assert.equal(result.status, "fallback-direct");
+    assert.equal(result.reason, "headroom-start-failed");
+    assert.match(result.error, /ONNX embedding model/i);
+    assert.match(result.error, /HuggingFace/i);
+  });
+
+  it("auto-installs Headroom only once across concurrent first-use callers", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "headroom-auto-install-"));
+    const config = {
+      autoInstall: true,
+      stateRoot: path.join(workspace, "state"),
+      installWaitMs: 5000
+    };
+    let installed = false;
+    let installActive = false;
+    let installCalls = 0;
+    let returnsDuringInstall = 0;
+    const events = [];
+    const options = {
+      onInstallEvent: (event) => events.push(event.status),
+      resolveCommand: () => (installed ? process.execPath : null),
+      installHeadroom: async () => {
+        installCalls += 1;
+        installActive = true;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        installed = true;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        installActive = false;
+        return { status: "installed" };
+      }
+    };
+
+    const observeReturn = (promise) =>
+      promise.then((result) => {
+        if (installActive) {
+          returnsDuringInstall += 1;
+        }
+        return result;
+      });
+    const [first, second] = await Promise.all([
+      observeReturn(ensureHeadroomRuntime(workspace, config, options)),
+      observeReturn(ensureHeadroomRuntime(workspace, config, options))
+    ]);
+
+    assert.equal(installCalls, 1);
+    assert.equal(returnsDuringInstall, 0);
+    assert.equal(first.command, process.execPath);
+    assert.equal(second.command, process.execPath);
+    assert.equal(first.autoInstalled, true);
+    assert.equal(second.autoInstalled, true);
+    assert.ok(events.includes("installing"));
+    assert.ok(events.includes("waiting"));
+    assert.ok(events.includes("installed"));
+  });
+
+  it("falls back in auto mode and fails closed in required mode when automatic installation fails", async () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "headroom-auto-install-failure-"));
+    const config = {
+      autoInstall: true,
+      command: path.join(workspace, "missing-headroom.exe"),
+      stateRoot: path.join(workspace, "state"),
+      installWaitMs: 500
+    };
+    const options = {
+      resolveCommand: () => null,
+      installHeadroom: async () => {
+        throw new Error("python unavailable");
+      }
+    };
+
+    const automatic = await ensureHeadroomProxy(workspace, { ...config, mode: "auto" }, options);
+    assert.equal(automatic.status, "fallback-direct");
+    assert.equal(automatic.reason, "headroom-auto-install-failed");
+    assert.match(automatic.error, /python unavailable/i);
+
+    await assert.rejects(
+      ensureHeadroomProxy(workspace, { ...config, mode: "required" }, options),
+      /automatic Headroom installation failed.*python unavailable/i
+    );
+  });
+
   it("fails open in auto mode and fails closed in required mode when Headroom is missing", async () => {
     const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "headroom-missing-"));
     const config = {
+      autoInstall: false,
       command: path.join(workspace, "missing-headroom.exe"),
       stateRoot: path.join(workspace, "state"),
       startupTimeoutMs: 100

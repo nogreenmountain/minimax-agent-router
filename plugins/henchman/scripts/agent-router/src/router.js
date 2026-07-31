@@ -480,11 +480,16 @@ export async function executeAgentAsync(prompt, config, options = {}) {
   const args = renderArgs(agent.args || [], templateValues);
   const input = agent.promptMode === "stdin" || !agent.promptMode ? promptText : undefined;
   const timeoutMs = options.timeoutMs || config.defaults?.timeoutMs || DEFAULT_CONFIG.defaults.timeoutMs;
+  const headroomInstallWaitMs = Math.max(
+    timeoutMs,
+    Number(config.headroom?.installWaitMs || DEFAULT_HEADROOM_CONFIG.installWaitMs)
+  );
   const headroomInvocation = prepareHeadroomInvocation(agentName, config, cwd, options);
 
   return await new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
+    let stderrLineBuffer = "";
     let spawnError = null;
     let timedOut = false;
     let settled = false;
@@ -495,12 +500,21 @@ export async function executeAgentAsync(prompt, config, options = {}) {
       windowsHide: true
     });
 
-    const timer = timeoutMs
-      ? setTimeout(() => {
-          timedOut = true;
-          child.kill();
-        }, timeoutMs)
-      : null;
+    let activeTimeoutMs = timeoutMs;
+    let timer = null;
+    const armTimeout = (delayMs) => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+      activeTimeoutMs = delayMs;
+      timer = delayMs
+        ? setTimeout(() => {
+            timedOut = true;
+            child.kill();
+          }, delayMs)
+        : null;
+    };
+    armTimeout(timeoutMs);
 
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
@@ -509,6 +523,15 @@ export async function executeAgentAsync(prompt, config, options = {}) {
     });
     child.stderr?.on("data", (chunk) => {
       stderr += chunk;
+      const lines = `${stderrLineBuffer}${chunk}`.split(/\r?\n/);
+      stderrLineBuffer = lines.pop() || "";
+      for (const line of lines) {
+        if (isHeadroomInstallPending(line)) {
+          armTimeout(headroomInstallWaitMs + timeoutMs);
+        } else if (isHeadroomInstallFinished(line)) {
+          armTimeout(timeoutMs);
+        }
+      }
     });
     child.on("error", (error) => {
       spawnError = error;
@@ -543,7 +566,7 @@ export async function executeAgentAsync(prompt, config, options = {}) {
         cwd,
         exitCode,
         signal,
-        error: spawnError ? spawnError.message : timedOut ? `Timed out after ${timeoutMs}ms` : null,
+        error: spawnError ? spawnError.message : timedOut ? `Timed out after ${activeTimeoutMs}ms` : null,
         reviewStatus: status === "ok" ? "pending-codex" : "required",
         partialChangesPossible: timedOut,
         stdoutChars: stdout.length,
@@ -965,6 +988,20 @@ function cleanupPromptFile(file) {
   } catch {
     // Best-effort cleanup. A stale temp prompt file should not hide the CLI result.
   }
+}
+
+function isHeadroomInstallPending(line) {
+  return (
+    line.includes("[headroom] Headroom is not installed; automatically installing") ||
+    line.includes("[headroom] Headroom installation is already running; waiting")
+  );
+}
+
+function isHeadroomInstallFinished(line) {
+  return (
+    line.includes("[headroom] Headroom installation completed:") ||
+    line.includes("[headroom] Headroom installation failed for")
+  );
 }
 
 function prepareHeadroomInvocation(agentName, config, cwd, options) {

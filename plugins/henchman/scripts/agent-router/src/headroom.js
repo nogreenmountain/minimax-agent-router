@@ -9,12 +9,14 @@ export const HEADROOM_PACKAGE_SPEC = "headroom-ai[proxy]==0.33.0";
 
 export const DEFAULT_HEADROOM_CONFIG = {
   mode: "auto",
+  autoInstall: true,
   host: "127.0.0.1",
   upstreamUrl: "https://api.minimax.io/anthropic",
   memoryStorage: "project",
   memoryTopK: 3,
   savingsProfile: "coding",
-  startupTimeoutMs: 120000,
+  installWaitMs: 1200000,
+  startupTimeoutMs: 300000,
   portRangeStart: 18787,
   portRangeSize: 1000,
   telemetry: false,
@@ -28,7 +30,7 @@ export function normalizeHeadroomConfig(config = {}, env = process.env) {
     throw new Error(`Invalid Headroom mode: ${mode}. Use auto, required, or off.`);
   }
   if (String(merged.memoryStorage || "project").toLowerCase() !== "project") {
-    throw new Error("MiniMax Agent Router requires project memory isolation; global or user memory is not allowed.");
+    throw new Error("Henchman requires project memory isolation; global or user memory is not allowed.");
   }
   if (!new Set(["127.0.0.1", "localhost", "::1"]).has(String(merged.host || "127.0.0.1").toLowerCase())) {
     throw new Error("Headroom must bind to a loopback address.");
@@ -37,6 +39,10 @@ export function normalizeHeadroomConfig(config = {}, env = process.env) {
   return {
     ...merged,
     mode,
+    autoInstall: parseBoolean(
+      env.AGENT_ROUTER_HEADROOM_AUTO_INSTALL,
+      Boolean(merged.autoInstall)
+    ),
     command: env.AGENT_ROUTER_HEADROOM_COMMAND || merged.command || null,
     stateRoot:
       env.AGENT_ROUTER_HEADROOM_STATE_ROOT ||
@@ -53,6 +59,12 @@ export function normalizeHeadroomConfig(config = {}, env = process.env) {
       100,
       600000,
       DEFAULT_HEADROOM_CONFIG.startupTimeoutMs
+    ),
+    installWaitMs: clampInteger(
+      env.AGENT_ROUTER_HEADROOM_INSTALL_WAIT_MS || merged.installWaitMs,
+      1000,
+      3600000,
+      DEFAULT_HEADROOM_CONFIG.installWaitMs
     ),
     portRangeStart: clampInteger(merged.portRangeStart, 1024, 65535, 18787),
     portRangeSize: clampInteger(merged.portRangeSize, 1, 10000, 1000),
@@ -89,6 +101,7 @@ export function resolveHeadroomPaths(workspace, config = {}) {
     stdoutLog: path.join(projectStateDir, "proxy.stdout.log"),
     stderrLog: path.join(projectStateDir, "proxy.stderr.log"),
     savingsPath: path.join(projectStateDir, "proxy-savings.json"),
+    installLockPath: path.join(normalizedConfig.stateRoot, "install.lock"),
     venvDir: path.join(normalizedConfig.stateRoot, "venv"),
     venvCommand:
       process.platform === "win32"
@@ -135,7 +148,18 @@ export async function ensureHeadroomProxy(workspace, config = {}, options = {}) 
     });
   }
 
-  const command = resolveHeadroomCommand(paths, normalizedConfig, options.env || process.env);
+  let runtime;
+  try {
+    runtime = await ensureHeadroomRuntime(workspace, normalizedConfig, options);
+  } catch (error) {
+    emitInstallEvent(options, {
+      status: "failed",
+      packageSpec: normalizedConfig.packageSpec,
+      error: error.message
+    });
+    return handleAutoInstallFailure(normalizedConfig, paths, error);
+  }
+  const command = runtime.command;
   if (!command) {
     if (normalizedConfig.mode === "required") {
       throw new Error("Headroom is not available. Run `agent-router headroom setup` first.");
@@ -171,6 +195,7 @@ export async function ensureHeadroomProxy(workspace, config = {}, options = {}) 
         return sanitizeHeadroomReport({
           enabled: true,
           status: "reused",
+          runnable: true,
           baseUrl: `http://${normalizedConfig.host}:${existing.port}`,
           port: existing.port,
           pid: proxyPid,
@@ -178,7 +203,9 @@ export async function ensureHeadroomProxy(workspace, config = {}, options = {}) 
           memoryScope: "project",
           memoryDbPath: paths.memoryDbPath,
           savingsProfile: normalizedConfig.savingsProfile,
-          upstreamUrl: normalizedConfig.upstreamUrl
+          autoInstalled: runtime.autoInstalled,
+          upstreamUrl: normalizedConfig.upstreamUrl,
+          ...getMemoryDiagnostics(paths)
         });
       }
     }
@@ -223,9 +250,10 @@ export async function ensureHeadroomProxy(workspace, config = {}, options = {}) 
   const health = await waitForHealth(baseUrl, normalizedConfig.startupTimeoutMs);
   if (!isHealthy(health)) {
     tryKill(child.pid);
+    const startupHint = getStartupHint(paths);
     const error = new Error(
       `Headroom proxy did not become healthy within ${normalizedConfig.startupTimeoutMs}ms. ` +
-        `See ${paths.stderrLog}.`
+        `See ${paths.stderrLog}.${startupHint ? ` ${startupHint}` : ""}`
     );
     return handleStartFailure(normalizedConfig, paths, error);
   }
@@ -239,6 +267,7 @@ export async function ensureHeadroomProxy(workspace, config = {}, options = {}) 
   return sanitizeHeadroomReport({
     enabled: true,
     status: "started",
+    runnable: true,
     baseUrl,
     port,
     pid: proxyPid,
@@ -246,8 +275,104 @@ export async function ensureHeadroomProxy(workspace, config = {}, options = {}) 
     memoryScope: "project",
     memoryDbPath: paths.memoryDbPath,
     savingsProfile: normalizedConfig.savingsProfile,
-    upstreamUrl: normalizedConfig.upstreamUrl
+    autoInstalled: runtime.autoInstalled,
+    upstreamUrl: normalizedConfig.upstreamUrl,
+    ...getMemoryDiagnostics(paths)
   });
+}
+
+export async function ensureHeadroomRuntime(workspace, config = {}, options = {}) {
+  const env = options.env || process.env;
+  const normalizedConfig = normalizeHeadroomConfig(config, env);
+  const paths = resolveHeadroomPaths(workspace, normalizedConfig);
+  const resolveCommand = options.resolveCommand || resolveHeadroomCommand;
+  const installer = options.installHeadroom || installHeadroom;
+  let command = resolveCommand(paths, normalizedConfig, env);
+  if (command || !normalizedConfig.autoInstall) {
+    return { command, autoInstalled: false };
+  }
+
+  fs.mkdirSync(normalizedConfig.stateRoot, { recursive: true });
+  const deadline = Date.now() + normalizedConfig.installWaitMs;
+  let waitedForAnotherInstaller = false;
+
+  while (Date.now() < deadline) {
+    const lockExists = fs.existsSync(paths.installLockPath);
+    if (!waitedForAnotherInstaller || !lockExists) {
+      command = resolveCommand(paths, normalizedConfig, env);
+      if (command) {
+        return { command, autoInstalled: waitedForAnotherInstaller };
+      }
+    }
+
+    let lockFd;
+    try {
+      lockFd = fs.openSync(paths.installLockPath, "wx", 0o600);
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+      if (clearStaleInstallLock(paths.installLockPath)) {
+        continue;
+      }
+      if (!waitedForAnotherInstaller) {
+        emitInstallEvent(options, { status: "waiting", packageSpec: normalizedConfig.packageSpec });
+      }
+      waitedForAnotherInstaller = true;
+      await delay(250);
+      continue;
+    }
+
+    try {
+      fs.writeFileSync(
+        lockFd,
+        `${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`,
+        "utf8"
+      );
+    } catch (error) {
+      try {
+        fs.closeSync(lockFd);
+      } catch {
+        // Best-effort cleanup after a lock initialization failure.
+      }
+      try {
+        fs.unlinkSync(paths.installLockPath);
+      } catch {
+        // Best-effort cleanup after a lock initialization failure.
+      }
+      throw error;
+    }
+
+    try {
+      emitInstallEvent(options, { status: "installing", packageSpec: normalizedConfig.packageSpec });
+      await Promise.resolve(
+        installer(normalizedConfig, {
+          env,
+          workspace,
+          timeoutMs: normalizedConfig.installWaitMs
+        })
+      );
+      command = resolveCommand(paths, normalizedConfig, env);
+      if (!command) {
+        throw new Error(`Headroom installer completed but ${paths.venvCommand} is unavailable.`);
+      }
+      emitInstallEvent(options, { status: "installed", packageSpec: normalizedConfig.packageSpec });
+      return { command, autoInstalled: true };
+    } finally {
+      try {
+        fs.closeSync(lockFd);
+      } catch {
+        // The lock descriptor may already be closed after a failed install.
+      }
+      try {
+        fs.unlinkSync(paths.installLockPath);
+      } catch {
+        // Another recovery path may already have removed a stale lock.
+      }
+    }
+  }
+
+  throw new Error(`Timed out waiting ${normalizedConfig.installWaitMs}ms for Headroom installation.`);
 }
 
 export async function stopHeadroomProxy(workspace, config = {}) {
@@ -274,17 +399,30 @@ export async function getHeadroomStatus(workspace, config = {}) {
   const state = readJson(paths.stateFile);
   const baseUrl = state?.port ? `http://${normalizedConfig.host}:${state.port}` : null;
   const health = baseUrl ? await probeJson(`${baseUrl}/health`, 1500) : null;
+  const installed = Boolean(command);
+  const running = isHealthy(health);
   return sanitizeHeadroomReport({
-    installed: Boolean(command),
-    enabled: isHealthy(health),
-    status: isHealthy(health) ? "running" : command ? "stopped" : "not-installed",
-    baseUrl: isHealthy(health) ? baseUrl : null,
-    port: isHealthy(health) ? state.port : null,
-    pid: isHealthy(health) ? state.pid : null,
+    installed,
+    runnable: installed,
+    enabled: running,
+    status: running ? "running" : installed ? "stopped" : "not-installed",
+    note: running
+      ? "Headroom is running for this workspace."
+      : installed
+        ? "Headroom is installed and starts on demand with --headroom auto/required."
+        : normalizedConfig.autoInstall
+          ? "Headroom will be installed automatically on the first MiniMax/Headroom task."
+          : "Headroom is not installed and automatic installation is disabled.",
+    baseUrl: running ? baseUrl : null,
+    port: running ? state.port : null,
+    pid: running ? state.pid : null,
     workspaceId: paths.workspaceId,
     memoryScope: "project",
     memoryDbPath: paths.memoryDbPath,
-    savingsProfile: normalizedConfig.savingsProfile
+    savingsProfile: normalizedConfig.savingsProfile,
+    autoInstall: normalizedConfig.autoInstall,
+    packageSpec: normalizedConfig.packageSpec,
+    ...getMemoryDiagnostics(paths)
   });
 }
 
@@ -349,8 +487,10 @@ export function resolveProxyPid(health, fallbackPid) {
 export function sanitizeHeadroomReport(report = {}) {
   const allowed = [
     "installed",
+    "runnable",
     "enabled",
     "status",
+    "note",
     "reason",
     "baseUrl",
     "port",
@@ -358,7 +498,12 @@ export function sanitizeHeadroomReport(report = {}) {
     "workspaceId",
     "memoryScope",
     "memoryDbPath",
+    "memoryStatus",
+    "memoryNote",
     "savingsProfile",
+    "autoInstall",
+    "autoInstalled",
+    "packageSpec",
     "upstreamUrl",
     "upstreamSource",
     "requests",
@@ -472,6 +617,8 @@ export function buildProxyEnvironment(config, paths, sourceEnv) {
   env.HEADROOM_TOOL_SEARCH = "0";
   env.HEADROOM_TELEMETRY = config.telemetry ? "on" : "off";
   env.HEADROOM_OUTPUT_SHAPER = "off";
+  env.PYTHONIOENCODING = "utf-8";
+  env.PYTHONUTF8 = "1";
   return env;
 }
 
@@ -539,6 +686,46 @@ function resolveHealthUpstream(health) {
   return health?.checks?.upstream?.url || health?.config?.anthropic_api_url || null;
 }
 
+function getMemoryDiagnostics(paths) {
+  const logs = `${readTextTail(paths.stdoutLog)}\n${readTextTail(paths.stderrLog)}`;
+  if (/embedder warm-up failed\s*\(non-fatal\)/i.test(logs)) {
+    return {
+      memoryStatus: "degraded",
+      memoryNote:
+        "The proxy remains usable, but semantic memory retrieval may be degraded because the embedding model warm-up failed."
+    };
+  }
+  return {};
+}
+
+function getStartupHint(paths) {
+  const logs = `${readTextTail(paths.stdoutLog)}\n${readTextTail(paths.stderrLog)}`;
+  if (/Loading ONNX embedding model/i.test(logs)) {
+    return (
+      "The cold start was waiting for the ONNX embedding model. Check HuggingFace access, a configured mirror, " +
+      "or a local Qdrant/all-MiniLM-L6-v2-onnx cache; the proxy may otherwise continue with degraded semantic memory."
+    );
+  }
+  return "";
+}
+
+function readTextTail(file, maxBytes = 128 * 1024) {
+  try {
+    const size = fs.statSync(file).size;
+    const length = Math.min(size, maxBytes);
+    const buffer = Buffer.alloc(length);
+    const fd = fs.openSync(file, "r");
+    try {
+      fs.readSync(fd, buffer, 0, length, Math.max(0, size - length));
+    } finally {
+      fs.closeSync(fd);
+    }
+    return buffer.toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
 function normalizeUrl(value) {
   return String(value || "").replace(/\/+$/, "").toLowerCase();
 }
@@ -566,6 +753,61 @@ function handleStartFailure(config, paths, error) {
     memoryScope: "project",
     error: error.message
   });
+}
+
+function handleAutoInstallFailure(config, paths, error) {
+  const wrapped = new Error(`Automatic Headroom installation failed: ${error.message}`);
+  if (config.mode === "required") {
+    throw wrapped;
+  }
+  return sanitizeHeadroomReport({
+    enabled: false,
+    status: "fallback-direct",
+    reason: "headroom-auto-install-failed",
+    workspaceId: paths.workspaceId,
+    memoryScope: "project",
+    autoInstall: config.autoInstall,
+    packageSpec: config.packageSpec,
+    error: wrapped.message
+  });
+}
+
+function clearStaleInstallLock(lockPath) {
+  const lock = readJson(lockPath);
+  if (lock?.pid && isProcessAlive(lock.pid)) {
+    return false;
+  }
+  if (!lock?.pid) {
+    try {
+      const ageMs = Date.now() - fs.statSync(lockPath).mtimeMs;
+      if (ageMs < 5000) {
+        return false;
+      }
+    } catch {
+      return true;
+    }
+  }
+  try {
+    fs.unlinkSync(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(Number(pid), 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function emitInstallEvent(options, event) {
+  if (typeof options.onInstallEvent === "function") {
+    options.onInstallEvent(event);
+  }
 }
 
 function tryKill(pid) {
@@ -619,6 +861,20 @@ function sanitizeSegment(value) {
 function clampInteger(value, min, max, fallback) {
   const number = Number(value);
   return Number.isInteger(number) ? Math.max(min, Math.min(max, number)) : fallback;
+}
+
+function parseBoolean(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
 }
 
 function delay(ms) {

@@ -5,10 +5,10 @@
   },
   "plugins": [
     {
-      "name": "minimax-agent-router",
+      "name": "henchman",
       "source": {
         "source": "local",
-        "path": "./plugins/minimax-agent-router"
+        "path": "./plugins/henchman"
       },
       "policy": {
         "installation": "AVAILABLE",

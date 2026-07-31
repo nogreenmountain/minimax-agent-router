@@ -46,7 +46,10 @@ const authToken = connection.authToken || key;
 
 let headroom;
 try {
-  headroom = await ensureHeadroomProxy(process.cwd(), headroomConfig, { env: process.env });
+  headroom = await ensureHeadroomProxy(process.cwd(), headroomConfig, {
+    env: process.env,
+    onInstallEvent: printHeadroomInstallEvent
+  });
 } catch (error) {
   writeHeadroomReport(headroomReportPath, {
     enabled: false,
@@ -271,5 +274,17 @@ function cleanupClaudeSettings(file) {
     fs.rmSync(path.dirname(file), { recursive: true, force: true });
   } catch {
     // A stale temporary settings file should not replace the worker result.
+  }
+}
+
+function printHeadroomInstallEvent(event) {
+  const messages = {
+    waiting: `Headroom installation is already running; waiting for ${event.packageSpec}.`,
+    installing: `Headroom is not installed; automatically installing ${event.packageSpec}.`,
+    installed: `Headroom installation completed: ${event.packageSpec}.`,
+    failed: `Headroom installation failed for ${event.packageSpec}: ${event.error || "unknown error"}`
+  };
+  if (messages[event.status]) {
+    console.error(`[headroom] ${messages[event.status]}`);
   }
 }

@@ -1,6 +1,6 @@
-# MiniMax Agent Router Plugin
+# Henchman Plugin
 
-这个 Codex 插件封装了本地 `agent-router` 链路：
+Henchman 封装了本地 `agent-router` 链路：
 
 ```text
 Codex -> Task Gate -> Claude Code CLI -> Headroom 本地代理 -> MiniMax
@@ -23,18 +23,26 @@ MiniMax 的输出不是最终结果，必须由 Codex 检查后再采用。
 
 ## Headroom 压缩和跨 Agent 记忆
 
-插件默认以 `auto` 模式使用 Headroom：已安装时通过本地回环代理压缩重复上下文，并给每个工作区建立独立 SQLite 记忆库；未安装或启动失败时返回 `fallback-direct` 后直连 MiniMax。
+插件默认以 `auto` 模式使用 Headroom：首次使用时自动在用户目录创建专用 Python 虚拟环境并安装固定版本 `headroom-ai[proxy]==0.33.0`，随后通过本地回环代理压缩重复上下文，并给每个工作区建立独立 SQLite 记忆库。自动安装或启动失败时返回 `fallback-direct` 后直连 MiniMax。
 
 默认设置强调质量和隔离：`coding` 压缩配置、最多召回 3 条记忆、不启用输出塑形、不启用自动学习、禁止全局记忆。worker 保存的事实带有 `UNVERIFIED_WORKER` 语义，Codex 必须检查当前代码后才能采用。
 
 为兼容 MiniMax 的 Anthropic 网关，路由器会关闭 Headroom 的 Anthropic 专用 `tool_search`；常规上下文压缩、CCR 和项目记忆不受影响。
 
-首次安装 Headroom：
+通常不需要手动安装。第一次 MiniMax 委派或 `headroom start` 会自动安装；下面的 `setup` 只用于提前预热或修复：
 
 ```cmd
 node .\src\cli.js headroom setup --config .\agent-router.config.json
 node .\src\cli.js headroom doctor --config .\agent-router.config.json
 ```
+
+自动安装目录为 `~/.agent-router/headroom/venv`。并发 worker 使用同一个安装锁，不会重复安装。设置 `AGENT_ROUTER_HEADROOM_AUTO_INSTALL=false` 可以关闭自动安装。
+
+首次安装等待不计入 worker 的 5 分钟任务预算。Headroom 冷启动默认最多等待 5 分钟，以容纳 ONNX embedding 模型初始化。
+
+如果自动安装失败，先确认 Python 3.10+ 和 `py -3`（Windows）或 `python3`（macOS/Linux）可用，再检查 pip 网络、代理和证书。`auto` 模式会回退直连，`required` 模式会停止并返回错误。
+
+`headroom doctor` 中 `installed=true, runnable=true, status=stopped` 表示运行时已经就绪，只是当前项目没有常驻代理；任务会按需启动。如果 ONNX embedder warm-up 非致命失败，会显示 `memoryStatus=degraded`，此时代理和 MiniMax 可继续使用，但语义记忆召回可能降级。Windows 代理进程固定使用 UTF-8 输出。
 
 查看当前项目代理和节省统计：
 
@@ -78,7 +86,7 @@ MINIMAX_SUBSCRIPTION_KEY
 进入 router 目录：
 
 ```cmd
-cd plugins\minimax-agent-router\scripts\agent-router
+cd plugins\henchman\scripts\agent-router
 ```
 
 检查是否可用：

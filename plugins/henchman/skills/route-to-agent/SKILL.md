@@ -1,11 +1,11 @@
 ---
 name: route-to-agent
-description: Assess and route only well-fitted, scoped chores from Codex to Claude Code CLI backed by MiniMax through the plugin-bundled agent-router, optionally using Headroom for token compression and project-isolated persistent worker memory. Use when the user wants Codex to supervise Claude Code, use MiniMax token-plan quota, run independent low-cost workers, share verified project context, choose model/effort, or monitor delegated work. Keep Codex responsible for architecture, unfamiliar APIs, platform integration, security, review, deployments, and final verification.
+description: Use Henchman to assess and route only well-fitted, scoped chores from Codex to Claude Code CLI backed by MiniMax through the plugin-bundled agent-router, optionally using Headroom for token compression and project-isolated persistent worker memory. Use when the user wants Codex to supervise Claude Code, use MiniMax token-plan quota, run independent low-cost workers, share verified project context, choose model/effort, or monitor delegated work. Keep Codex responsible for architecture, unfamiliar APIs, platform integration, security, review, deployments, and final verification.
 ---
 
-# Route To Agent
+# Henchman Route To Agent
 
-Use this plugin as a guarded junior-to-mid-level worker pool:
+Use Henchman as a guarded junior-to-mid-level worker pool:
 
 ```text
 Codex lead -> task-fit gate -> Claude Code CLI -> Headroom proxy -> MiniMax
@@ -21,7 +21,7 @@ MiniMax output is a draft. A successful process exit means only `reviewStatus=pe
 3. Split suitable work into one file, one source/test pair, or one clear directory.
 4. Target 3-5 minutes per worker. The default hard budget is 300000 ms.
 5. Run `route` with the complete delegation prompt.
-6. Check `headroom doctor` before the first compressed delegation. Run `headroom setup` only as an explicit installation step; do not silently install dependencies during a task.
+6. Headroom auto-installs its pinned runtime on the first compressed delegation. Treat the first run as a dependency warm-up, observe installation events, and use `headroom setup` only for optional prewarming or repair.
 7. Invoke `run` or `run-many` only when the route returns `assessment.decision=delegate`.
 8. Inspect every changed file and rerun verification as Codex.
 
@@ -44,6 +44,11 @@ Use parallel workers only for independent tasks with non-overlapping scopes. Res
 
 Use Headroom in `auto` mode by default. It runs as a router-managed loopback proxy and does not mutate global Claude Code settings.
 
+- Keep `autoInstall=true` so a new machine receives the pinned Headroom runtime on first use. The managed virtual environment lives under `~/.agent-router/headroom/venv` and concurrent workers share an installation lock.
+- Do not count first-use dependency installation against the normal worker task budget. The router extends the deadline only while installation is pending, then restores the five-minute task timeout.
+- Treat `installed=true, runnable=true, status=stopped` as ready for on-demand use, not as a failure.
+- If `memoryStatus=degraded`, the proxy is usable but semantic memory recall may be reduced; verify current files directly and do not rely on recalled context.
+- If automatic installation fails, inspect the reported Python, venv, pip, network, proxy, or certificate error. `auto` may continue as `fallback-direct`; `required` must fail closed.
 - Memory is always project-isolated. Never change `memoryStorage` to `user` or `global`.
 - Keep `memoryTopK=3` unless evidence shows a specific project needs another small bound.
 - Keep the `coding` savings profile and output shaping off to protect delivery quality.
@@ -115,7 +120,7 @@ Check readiness:
 node "<plugin-root>\scripts\agent-router\src\cli.js" doctor --config "<plugin-root>\scripts\agent-router\agent-router.config.json"
 ```
 
-Install and check Headroom:
+Optionally prewarm or repair Headroom, then check it:
 
 ```powershell
 node "<plugin-root>\scripts\agent-router\src\cli.js" headroom setup --config "<plugin-root>\scripts\agent-router\agent-router.config.json"

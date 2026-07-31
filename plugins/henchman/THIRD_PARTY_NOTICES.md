@@ -8,4 +8,4 @@ Henchman can install and run [Headroom](https://github.com/headroomlabs-ai/headr
 - License: Apache License 2.0
 - Copyright and license terms remain with the Headroom project and its contributors.
 
-This repository does not vendor Headroom source code. On first use, or when the user runs `headroom setup`, the router installs the published package into a router-managed virtual environment on the user's machine.
+This plugin does not vendor Headroom source code. On first use, or when the user runs `headroom setup`, the router installs the published package into a router-managed virtual environment on the user's machine.

@@ -1,12 +1,12 @@
 # Agent Router Runtime
 
-This runtime is bundled by the `minimax-agent-router` Codex plugin.
+This runtime is bundled by the `henchman` Codex plugin.
 
-The runtime enables a task-fit gate by default. Editing work needs a narrow scope, code work needs an exact test command, each worker has a five-minute default budget, and successful runs remain pending Codex review. When installed, a router-managed Headroom proxy compresses Claude Code context and provides project-isolated persistent memory.
+The runtime enables a task-fit gate by default. Editing work needs a narrow scope, code work needs an exact test command, each worker has a five-minute default budget, and successful runs remain pending Codex review. On first use, the router automatically installs a pinned Headroom runtime into its own user-level virtual environment. The managed proxy then compresses Claude Code context and provides project-isolated persistent memory.
 
 ## Headroom
 
-Install the pinned runtime into the router-managed virtual environment:
+Normal MiniMax tasks and `headroom start` automatically install `headroom-ai[proxy]==0.33.0` into `~/.agent-router/headroom/venv` when it is missing. Concurrent first-use workers share an installation lock. Use `setup` only to prewarm or repair the managed runtime:
 
 ```cmd
 node .\src\cli.js headroom setup --config .\agent-router.config.json
@@ -22,6 +22,10 @@ node .\src\cli.js headroom stop --config .\agent-router.config.json
 ```
 
 The default mode is `auto`. Use `--headroom required` when direct fallback is unacceptable, or `--headroom off` for an A/B comparison. Memory is always project-isolated, recall is capped at three entries, output shaping and automatic learning are disabled, and reports never contain credentials.
+
+Set `AGENT_ROUTER_HEADROOM_AUTO_INSTALL=false` to opt out. If Python, venv creation, or pip download fails, `auto` mode reports `headroom-auto-install-failed` and falls back to the direct MiniMax route; `required` mode fails closed. Install Python 3.10+ and verify `py -3` on Windows or `python3` on macOS/Linux before retrying.
+
+First-use installation time is excluded from the normal five-minute worker budget. Proxy cold start allows up to five minutes for ONNX embedder initialization. `doctor` reports `runnable=true` for an installed on-demand runtime even when `status=stopped`. A non-fatal embedder warm-up failure is reported as `memoryStatus=degraded`: the proxy remains usable, while semantic memory recall may be reduced. Python output is forced to UTF-8 on Windows; read raw logs with an explicit UTF-8 encoding when needed.
 
 The router forces `HEADROOM_TOOL_SEARCH=0` because Headroom's Anthropic-only server tool-search schema is not supported by MiniMax-compatible Anthropic gateways. Compression, CCR, and project memory remain enabled.
 
