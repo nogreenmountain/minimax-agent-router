@@ -34,6 +34,9 @@ const permissionMode =
 const claudeCommand = process.env.CLAUDE_MINIMAX_CLI || defaultClaudeCommand();
 const claudePrefixArgs = parseJsonArrayEnv("CLAUDE_MINIMAX_CLI_ARGS");
 const extraClaudeArgs = parseJsonArrayEnv("CLAUDE_MINIMAX_EXTRA_ARGS");
+const workspaceRoot = process.env.AGENT_ROUTER_WORKSPACE_ROOT
+  ? path.resolve(process.env.AGENT_ROUTER_WORKSPACE_ROOT)
+  : "";
 const rawHeadroomConfig = parseJsonObjectEnv("AGENT_ROUTER_HEADROOM_CONFIG", {});
 const headroomReportPath = process.env.AGENT_ROUTER_HEADROOM_REPORT_PATH || null;
 const connection = resolveMiniMaxConnection({
@@ -50,6 +53,9 @@ try {
     env: process.env,
     onInstallEvent: printHeadroomInstallEvent
   });
+  if (process.env.AGENT_ROUTER_HEADROOM_NOTIFY_READY === "1") {
+    console.error("[headroom] Headroom ready.");
+  }
 } catch (error) {
   writeHeadroomReport(headroomReportPath, {
     enabled: false,
@@ -81,6 +87,7 @@ const claudeArgs = [
   effort,
   "--permission-mode",
   permissionMode,
+  ...(workspaceRoot ? ["--add-dir", workspaceRoot] : []),
   ...(claudeSettingsFile
     ? [
         "--setting-sources",
@@ -106,7 +113,7 @@ const result = spawnSync(spawnTarget.command, spawnTarget.args, {
   },
   maxBuffer: 20 * 1024 * 1024,
   windowsHide: true,
-  shell: spawnTarget.shell || false
+  shell: false
 });
 cleanupClaudeSettings(claudeSettingsFile);
 
@@ -133,10 +140,25 @@ process.exit(result.status ?? 1);
 
 function buildSpawnTarget(command, args) {
   if (process.platform === "win32" && /\.(cmd|bat)$/i.test(String(command))) {
-    return { command, args, shell: true };
+    const comspec = process.env.ComSpec || process.env.COMSPEC || "cmd.exe";
+    return {
+      command: comspec,
+      args: ["/d", "/s", "/c", [quoteCmdArg(command), ...args.map(quoteCmdArg)].join(" ")]
+    };
   }
 
   return { command, args };
+}
+
+function quoteCmdArg(value) {
+  const text = String(value);
+  if (text.length === 0) {
+    return '""';
+  }
+  if (!/[\s&()^|<>"]/g.test(text)) {
+    return text;
+  }
+  return `"${text.replace(/(["])/g, "\\$1")}"`;
 }
 
 function parseArgs(argv) {

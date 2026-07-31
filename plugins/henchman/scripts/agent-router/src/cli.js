@@ -18,9 +18,13 @@ import {
   executeManyTasks,
   formatManyTaskPrompt,
   getLogPath,
+  isBatchTaskInput,
   isCommandAvailable,
   loadConfig,
   loadRuns,
+  preflightWorkspaceAccess,
+  readJsonFile,
+  routeTasks,
   summarizeRuns
 } from "./router.js";
 
@@ -63,6 +67,15 @@ async function main(argv) {
 
   if (command === "route") {
     const task = getTask(flags, positional, cwd);
+    if (isBatchTaskInput(task)) {
+      const routed = routeTasks(task, config, {
+        agentName: flags.agent,
+        model: flags.model,
+        think: flags.think
+      });
+      printPayload(routed, flags, formatBatchRoute(routed));
+      return;
+    }
     const route = chooseRoute(task, config, {
       agentName: flags.agent,
       model: flags.model,
@@ -86,12 +99,40 @@ async function main(argv) {
     }
 
     const prompt = typeof task === "string" ? task : formatManyTaskPrompt(task);
+    const workspace = typeof task === "object" && task?.workspace ? path.resolve(cwd, task.workspace) : cwd;
+    const preflight = preflightWorkspaceAccess(task, workspace);
+    if (!preflight.ok) {
+      const blocked = {
+        status: "blocked",
+        reason: preflight.reason,
+        workspace: preflight.workspace,
+        scope: preflight.scope,
+        preflight,
+        reviewStatus: "required",
+        stdout: "",
+        stderr: "",
+        utility: {
+          workspaceReadOk: false,
+          scopeRespected: null,
+          filesChanged: null,
+          actionableOutput: false,
+          recommendedUseAgain: false,
+          usefulness: "low",
+          reason: "worker was not launched because the workspace or read-only scope could not be read"
+        }
+      };
+      printPayload(blocked, flags, `Blocked: ${blocked.reason}`);
+      process.exitCode = 1;
+      return;
+    }
     const result = await executeAgentAsync(prompt, config, {
       ...route,
       logPath,
-      cwd,
+      cwd: workspace,
       headroomMode: flags.headroom,
-      timeoutMs: Number(flags["timeout-ms"] || flags.timeoutMs || config.defaults?.timeoutMs || 0) || undefined
+      timeoutMs: Number(flags["timeout-ms"] || flags.timeoutMs || config.defaults?.timeoutMs || 0) || undefined,
+      workspaceReadOk: preflight.workspaceReadOk,
+      scopeRespected: true
     });
 
     if (flags.json) {
@@ -123,7 +164,7 @@ async function main(argv) {
       throw new Error("Missing tasks file. Pass --tasks tasks.json.");
     }
     const tasksFile = path.isAbsolute(tasksPath) ? tasksPath : path.join(cwd, tasksPath);
-    const tasksInput = JSON.parse(fs.readFileSync(tasksFile, "utf8"));
+    const tasksInput = readJsonFile(tasksFile);
     const result = await executeManyTasks(tasksInput, config, {
       agentName: flags.agent,
       model: flags.model,
@@ -263,6 +304,16 @@ function formatRoute(route) {
   return `Route to ${route.agentName} with model=${route.model}, think=${route.think} (${route.reason}). score=${route.assessment?.score ?? "n/a"}`;
 }
 
+function formatBatchRoute(routed) {
+  const lines = [
+    `Batch route: delegate=${routed.summary.delegate} codex=${routed.summary.codex}`
+  ];
+  for (const task of routed.tasks) {
+    lines.push(`- ${task.id}: ${task.decision} (${task.reason})`);
+  }
+  return lines.join("\n");
+}
+
 function formatStats(summary, logPath) {
   return [
     `Log: ${logPath}`,
@@ -283,7 +334,7 @@ async function handleHeadroomCommand(subcommand, config, flags, cwd) {
 
   if (subcommand === "setup") {
     const result = installHeadroom(config.headroom || {}, { workspace });
-    printPayload(result, flags, `Headroom installed: ${result.command}`);
+    printPayload(result, flags, formatHeadroomSetup(result));
     return;
   }
 
@@ -335,6 +386,9 @@ function formatHeadroomStatus(status) {
   if (status.runnable !== undefined) {
     lines.push(`Runnable: ${status.runnable ? "yes" : "no"}`);
   }
+  if (status.startsOnDemand !== undefined) {
+    lines.push(`Starts on demand: ${status.startsOnDemand ? "yes" : "no"}`);
+  }
   if (status.note) {
     lines.push(`Note: ${status.note}`);
   }
@@ -349,6 +403,24 @@ function formatHeadroomStatus(status) {
   }
   if (status.packageSpec) {
     lines.push(`Package: ${status.packageSpec}`);
+  }
+  if (status.interpretation) {
+    lines.push(`Interpretation: ${status.interpretation}`);
+  }
+  return lines.join("\n");
+}
+
+function formatHeadroomSetup(result) {
+  const lines = [`Headroom installed: ${result.command}`];
+  if (result.memoryModel?.status === "ready") {
+    lines.push(`ONNX memory model: ready (${result.memoryModel.repo})`);
+  } else if (result.memoryModel?.status === "degraded") {
+    lines.push("Headroom proxy is usable, but semantic memory may degrade.");
+    if (result.memoryModel.error) {
+      lines.push(`ONNX memory model error: ${result.memoryModel.error}`);
+    }
+  } else if (result.memoryModel?.status === "skipped") {
+    lines.push("ONNX memory model preload: skipped");
   }
   return lines.join("\n");
 }
@@ -368,12 +440,14 @@ function printHeadroomInstallEvent(event) {
 function formatRunMany(result) {
   const lines = [
     `Run many: status=${result.status} parallel=${result.parallel}`,
-    `Tasks: total=${result.summary.totalTasks} ok=${result.summary.okTasks} error=${result.summary.errorTasks} timedOut=${result.summary.timedOutTasks} codex=${result.summary.codexTasks} pendingReview=${result.summary.pendingReviewTasks}`
+    `Tasks: total=${result.summary.totalTasks} ok=${result.summary.okTasks} blocked=${result.summary.blockedTasks || 0} error=${result.summary.errorTasks} timedOut=${result.summary.timedOutTasks} codex=${result.summary.codexTasks} pendingReview=${result.summary.pendingReviewTasks}`
   ];
 
   for (const entry of result.results) {
     lines.push(`- ${entry.taskId}: ${entry.status} ${entry.agent || ""}`.trimEnd());
     if (entry.status === "codex") {
+      lines.push(`  reason: ${entry.reason}`);
+    } else if (entry.status === "blocked") {
       lines.push(`  reason: ${entry.reason}`);
     }
   }
@@ -401,7 +475,7 @@ function getTask(flags, positional, cwd) {
   const taskFileFlag = flags["task-file"] || flags.taskFile;
   if (taskFileFlag) {
     const taskFile = path.isAbsolute(taskFileFlag) ? taskFileFlag : path.join(cwd, taskFileFlag);
-    const task = JSON.parse(fs.readFileSync(taskFile, "utf8"));
+    const task = readJsonFile(taskFile);
     if (!task || Array.isArray(task) || typeof task !== "object") {
       throw new Error("--task-file must contain one structured task object.");
     }

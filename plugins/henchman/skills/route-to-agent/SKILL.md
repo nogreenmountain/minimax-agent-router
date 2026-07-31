@@ -21,9 +21,11 @@ MiniMax output is a draft. A successful process exit means only `reviewStatus=pe
 3. Split suitable work into one file, one source/test pair, or one clear directory.
 4. Target 3-5 minutes per worker. The default hard budget is 300000 ms.
 5. Run `route` with the complete delegation prompt.
-6. Headroom auto-installs its pinned runtime on the first compressed delegation. Treat the first run as a dependency warm-up, observe installation events, and use `headroom setup` only for optional prewarming or repair.
-7. Invoke `run` or `run-many` only when the route returns `assessment.decision=delegate`.
-8. Inspect every changed file and rerun verification as Codex.
+6. For batch files shaped as `{ "tasks": [...] }`, use `route --task-file` first and read every per-task decision; do not treat the batch as one edit task.
+7. Headroom auto-installs its pinned runtime on the first compressed delegation. Treat the first run as a dependency warm-up, observe installation events, and use `headroom setup` only for optional prewarming or repair.
+8. Invoke `run` or `run-many` only when the route returns `assessment.decision=delegate` or a batch entry returns `decision=delegate`.
+9. Expect `run` / `run-many` to preflight workspace readability before launching MiniMax. If the result is `status=blocked, reason=workspace-read-denied`, fix the workspace or scope instead of retrying the model.
+10. Inspect every changed file and rerun verification as Codex.
 
 Do not bypass a Codex decision by specifying `--agent`. The safety gate still owns the decision.
 
@@ -37,8 +39,11 @@ Delegate bounded drafts for:
 - A single file, small component, helper, or mechanical edit using established project APIs.
 - Repetitive implementations behind an existing interface.
 - Read-only code review or analysis that Codex will verify.
+- Read-only image processing research, such as comparing OpenCV, SAM, vectorizer, segmentation, OCR, or image pipeline libraries.
 
 Use parallel workers only for independent tasks with non-overlapping scopes. Research and documentation are good parallel candidates. Core implementation should normally be split into sequential phases.
+
+Do not delegate image generation, image editing, subjective judgment on user-uploaded images, or final visual acceptance. These stay with Codex or a dedicated visual tool.
 
 ## Headroom Policy
 
@@ -47,7 +52,10 @@ Use Headroom in `auto` mode by default. It runs as a router-managed loopback pro
 - Keep `autoInstall=true` so a new machine receives the pinned Headroom runtime on first use. The managed virtual environment lives under `~/.agent-router/headroom/venv` and concurrent workers share an installation lock.
 - Do not count first-use dependency installation against the normal worker task budget. The router extends the deadline only while installation is pending, then restores the five-minute task timeout.
 - Treat `installed=true, runnable=true, status=stopped` as ready for on-demand use, not as a failure.
+- Treat `startsOnDemand=true` as normal for idle projects.
 - If `memoryStatus=degraded`, the proxy is usable but semantic memory recall may be reduced; verify current files directly and do not rely on recalled context.
+- If `tokensSaved=0`, read the `interpretation` field before assuming a failure; small or cache-oriented tasks may save no measurable tokens.
+- `headroom setup` attempts to preload `Qdrant/all-MiniLM-L6-v2-onnx` (`model.onnx`, `tokenizer.json`). HuggingFace failures are nonfatal and mean semantic memory may degrade, not that the proxy is unusable.
 - If automatic installation fails, inspect the reported Python, venv, pip, network, proxy, or certificate error. `auto` may continue as `fallback-direct`; `required` must fail closed.
 - Memory is always project-isolated. Never change `memoryStorage` to `user` or `global`.
 - Keep `memoryTopK=3` unless evidence shows a specific project needs another small bound.
@@ -146,6 +154,13 @@ node "<plugin-root>\scripts\agent-router\src\cli.js" run-many --headroom auto --
 ```
 
 `run-many` emits worker start and finish events to stderr while preserving final JSON on stdout. Use `--quiet` only when progress output is undesirable.
+
+When reading a run result, inspect `utility`:
+
+- `workspaceReadOk=true` means the router preflighted the workspace before launch.
+- `actionableOutput=true` means the worker produced non-empty output Codex can inspect.
+- `usefulness=high|medium|low` is a quick triage hint, not final acceptance.
+- `recommendedUseAgain=true` only means similar bounded work may be worth delegating again after Codex review.
 
 ## Timeout Recovery
 

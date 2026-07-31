@@ -25,14 +25,25 @@ export const DEFAULT_CONFIG = {
       "image",
       "高风险",
       "安全",
+      "security",
       "权限",
+      "permission",
+      "permissions",
       "密钥",
+      "secret",
+      "secrets",
       "审计",
+      "audit",
       "数据库迁移",
+      "database migration",
+      "migration",
       "部署",
+      "deployment",
       "上线",
+      "production",
       "生产",
-      "回滚"
+      "回滚",
+      "rollback"
     ],
     taskGate: {
       enabled: true,
@@ -67,6 +78,28 @@ export const DEFAULT_CONFIG = {
         "第三方 api",
         "new sdk",
         "新的 sdk"
+      ],
+      imageOwnedKeywords: [
+        "generate image",
+        "create image",
+        "edit image",
+        "modify image",
+        "image generation",
+        "visual final acceptance",
+        "final visual acceptance",
+        "uploaded image",
+        "uploaded picture",
+        "subjective image",
+        "生成图片",
+        "生成一张图",
+        "生图",
+        "画图",
+        "修改图片",
+        "编辑图片",
+        "用户上传图片",
+        "视觉最终验收",
+        "最终视觉验收",
+        "主观判断图片"
       ]
     },
     preferredAgentOrder: ["claude-minimax", "pi", "claude", "hermes"]
@@ -135,12 +168,16 @@ export function loadConfig(configPath = "agent-router.config.json", cwd = proces
     };
   }
 
-  const userConfig = JSON.parse(fs.readFileSync(fullPath, "utf8"));
+  const userConfig = readJsonFile(fullPath);
   return {
     config: expandConfigPlaceholders(deepMerge(DEFAULT_CONFIG, userConfig), routerDir),
     path: fullPath,
     existed: true
   };
+}
+
+export function readJsonFile(filePath) {
+  return JSON.parse(stripBom(fs.readFileSync(filePath, "utf8")));
 }
 
 export function getLogPath(config, cwd = process.cwd()) {
@@ -177,6 +214,42 @@ export function chooseRoute(task, config, options = {}) {
   };
 }
 
+export function isBatchTaskInput(task) {
+  return Array.isArray(task) || Array.isArray(task?.tasks);
+}
+
+export function routeTasks(tasksInput, config, options = {}) {
+  const tasks = normalizeManyTasks(tasksInput);
+  const routedTasks = tasks.map((task, index) => {
+    const taskId = task.id || task.name || `task-${index + 1}`;
+    const route = chooseRoute(task, config, options);
+    const decision = route.runByCodex ? "codex" : "delegate";
+    return {
+      id: taskId,
+      index,
+      decision,
+      agent: route.agentName,
+      model: route.model,
+      think: route.think,
+      reason: route.reason,
+      assessment: route.assessment
+    };
+  });
+  const summary = routedTasks.reduce(
+    (acc, task) => {
+      acc[task.decision] += 1;
+      return acc;
+    },
+    { delegate: 0, codex: 0 }
+  );
+
+  return {
+    kind: "batch",
+    tasks: routedTasks,
+    summary
+  };
+}
+
 export function assessTask(task, config = DEFAULT_CONFIG) {
   const descriptor = normalizeTaskDescriptor(task);
   const gate = deepMerge(DEFAULT_CONFIG.routing.taskGate, config.routing?.taskGate || {});
@@ -204,7 +277,13 @@ export function assessTask(task, config = DEFAULT_CONFIG) {
     signals.push("platform-integration");
   }
 
-  const codexKeyword = findKeyword(lower, config.routing?.codexKeywords || DEFAULT_CONFIG.routing.codexKeywords);
+  const imageOwnedKeyword = findKeyword(lower, gate.imageOwnedKeywords || DEFAULT_CONFIG.routing.taskGate.imageOwnedKeywords);
+  if (imageOwnedKeyword) {
+    reasons.push(`image generation, editing, subjective image judgment, or visual final acceptance stays with Codex: ${imageOwnedKeyword}`);
+    signals.push("image-owned");
+  }
+
+  const codexKeyword = findCodexKeyword(lower, config.routing?.codexKeywords || DEFAULT_CONFIG.routing.codexKeywords, descriptor);
   if (codexKeyword) {
     reasons.push(`matched Codex-owned keyword: ${codexKeyword}`);
     signals.push("codex-owned");
@@ -280,6 +359,62 @@ export function assessTask(task, config = DEFAULT_CONFIG) {
     reasons: reasons.length > 0 ? reasons : ["bounded task passed the MiniMax task gate"],
     recommendations,
     signals
+  };
+}
+
+export function preflightWorkspaceAccess(task, workspace = process.cwd()) {
+  const descriptor = normalizeTaskDescriptor(task);
+  const root = path.resolve(String(workspace || process.cwd()));
+  const checked = [];
+  const denied = [];
+
+  try {
+    const stats = fs.statSync(root);
+    if (!stats.isDirectory()) {
+      throw new Error("workspace is not a directory");
+    }
+    fs.accessSync(root, fs.constants.R_OK);
+  } catch (error) {
+    return {
+      ok: false,
+      status: "blocked",
+      reason: "workspace-read-denied",
+      workspace: root,
+      scope: descriptor.scope,
+      checked,
+      denied: [{ path: root, error: error.message }],
+      workspaceReadOk: false
+    };
+  }
+
+  for (const entry of descriptor.scope) {
+    const scopeCheck = checkScopeEntry(entry, root, descriptor);
+    checked.push(scopeCheck.checked);
+    if (!scopeCheck.ok) {
+      denied.push(scopeCheck.checked);
+    }
+  }
+
+  if (denied.length > 0) {
+    return {
+      ok: false,
+      status: "blocked",
+      reason: "workspace-read-denied",
+      workspace: root,
+      scope: descriptor.scope,
+      checked,
+      denied,
+      workspaceReadOk: false
+    };
+  }
+
+  return {
+    ok: true,
+    status: "ok",
+    workspace: root,
+    scope: descriptor.scope,
+    checked,
+    workspaceReadOk: true
   };
 }
 
@@ -445,6 +580,14 @@ export function executeAgent(prompt, config, options = {}) {
     inputTokens,
     outputTokens,
     estimatedCost: estimateCost(inputTokens, outputTokens, agent.pricing),
+    utility: buildUtility({
+      status,
+      stdout,
+      stderr,
+      workspaceReadOk: options.workspaceReadOk,
+      scopeRespected: options.scopeRespected,
+      partialChangesPossible: timedOut
+    }),
     ...(headroom ? { headroom } : {})
   };
 
@@ -484,6 +627,9 @@ export async function executeAgentAsync(prompt, config, options = {}) {
     timeoutMs,
     Number(config.headroom?.installWaitMs || DEFAULT_HEADROOM_CONFIG.installWaitMs)
   );
+  const expectsHeadroomSetup =
+    agentName === "claude-minimax" &&
+    String(options.headroomMode || config.headroom?.mode || DEFAULT_HEADROOM_CONFIG.mode).toLowerCase() !== "off";
   const headroomInvocation = prepareHeadroomInvocation(agentName, config, cwd, options);
 
   return await new Promise((resolve) => {
@@ -514,7 +660,7 @@ export async function executeAgentAsync(prompt, config, options = {}) {
           }, delayMs)
         : null;
     };
-    armTimeout(timeoutMs);
+    armTimeout(expectsHeadroomSetup ? headroomInstallWaitMs + timeoutMs : timeoutMs);
 
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
@@ -574,6 +720,14 @@ export async function executeAgentAsync(prompt, config, options = {}) {
         inputTokens,
         outputTokens,
         estimatedCost: estimateCost(inputTokens, outputTokens, agent.pricing),
+        utility: buildUtility({
+          status,
+          stdout,
+          stderr,
+          workspaceReadOk: options.workspaceReadOk,
+          scopeRespected: options.scopeRespected,
+          partialChangesPossible: timedOut
+        }),
         ...(headroom ? { headroom } : {})
       };
 
@@ -620,6 +774,7 @@ export async function executeManyTasks(tasksInput, config, options = {}) {
       isCommandAvailable: options.isCommandAvailable
     });
     const taskId = task.id || task.name || `task-${index + 1}`;
+    const taskCwd = task.workspace || options.cwd || process.cwd();
 
     options.onEvent?.({ type: "task-started", taskId, index, at: new Date().toISOString() });
 
@@ -639,13 +794,42 @@ export async function executeManyTasks(tasksInput, config, options = {}) {
       return result;
     }
 
-    const taskCwd = task.workspace || options.cwd || process.cwd();
+    const preflight = preflightWorkspaceAccess(task, taskCwd);
+    if (!preflight.ok) {
+      const result = {
+        taskId,
+        index,
+        status: "blocked",
+        reason: preflight.reason,
+        workspace: preflight.workspace,
+        scope: preflight.scope,
+        preflight,
+        assessment: route.assessment,
+        agent: route.agentName,
+        reviewStatus: "required",
+        partialChangesPossible: false,
+        stdout: "",
+        stderr: "",
+        utility: buildUtility({
+          status: "blocked",
+          stdout: "",
+          stderr: "",
+          workspaceReadOk: false,
+          scopeRespected: null
+        })
+      };
+      options.onEvent?.({ type: "task-finished", taskId, index, status: result.status, at: new Date().toISOString() });
+      return result;
+    }
+
     const result = await executeAgentAsync(prompt, config, {
       ...route,
       logPath: options.logPath,
       cwd: taskCwd,
       headroomMode: task.headroomMode || options.headroomMode,
-      timeoutMs: task.timeoutMs || options.timeoutMs
+      timeoutMs: task.timeoutMs || options.timeoutMs,
+      workspaceReadOk: preflight.workspaceReadOk,
+      scopeRespected: true
     });
 
     const taskResult = {
@@ -663,7 +847,13 @@ export async function executeManyTasks(tasksInput, config, options = {}) {
 
   const summary = summarizeManyTaskResults(results);
   return {
-    status: summary.errorTasks > 0 ? "error" : summary.codexTasks > 0 ? "needs-codex" : "ok",
+    status: summary.blockedTasks > 0
+      ? "blocked"
+      : summary.errorTasks > 0
+        ? "error"
+        : summary.codexTasks > 0
+          ? "needs-codex"
+          : "ok",
     reviewStatus: summary.pendingReviewTasks > 0 ? "pending-codex" : "not-required",
     parallel,
     summary,
@@ -746,6 +936,7 @@ function summarizeManyTaskResults(results) {
     okTasks: 0,
     errorTasks: 0,
     codexTasks: 0,
+    blockedTasks: 0,
     timedOutTasks: 0,
     pendingReviewTasks: 0,
     totalDurationMs: 0,
@@ -759,6 +950,8 @@ function summarizeManyTaskResults(results) {
       summary.okTasks += 1;
     } else if (result.status === "codex") {
       summary.codexTasks += 1;
+    } else if (result.status === "blocked") {
+      summary.blockedTasks += 1;
     } else {
       summary.errorTasks += 1;
       if (result.status === "timed-out") {
@@ -858,6 +1051,51 @@ function addToBucket(bucket, run, thinkKey) {
   bucket.estimatedCost = roundMoney(bucket.estimatedCost + Number(run.estimatedCost || 0));
 }
 
+function buildUtility({
+  status,
+  stdout = "",
+  stderr = "",
+  workspaceReadOk = null,
+  scopeRespected = null,
+  partialChangesPossible = false
+} = {}) {
+  const actionableOutput = String(stdout || "").trim().length > 0;
+  const cleanErrorChannel = String(stderr || "").trim().length === 0;
+  const recommendedUseAgain =
+    status === "ok" &&
+    actionableOutput &&
+    workspaceReadOk !== false &&
+    scopeRespected !== false &&
+    !partialChangesPossible;
+  const usefulness = recommendedUseAgain
+    ? workspaceReadOk === true
+      ? "high"
+      : "medium"
+    : status === "ok" && actionableOutput
+      ? "medium"
+      : "low";
+  const reason = recommendedUseAgain
+    ? workspaceReadOk === true
+      ? "completed with workspace access and actionable output"
+      : "completed with actionable output"
+    : partialChangesPossible
+      ? "worker may have left partial changes and needs careful Codex review"
+      : status === "ok"
+        ? "completed, but output or scope evidence is limited"
+        : "worker did not complete successfully";
+
+  return {
+    workspaceReadOk,
+    scopeRespected,
+    filesChanged: null,
+    actionableOutput,
+    cleanErrorChannel,
+    recommendedUseAgain,
+    usefulness,
+    reason
+  };
+}
+
 function roundMoney(value) {
   return Math.round(Number(value || 0) * 1_000_000) / 1_000_000;
 }
@@ -922,6 +1160,96 @@ function extractTaskSection(text, label) {
 
 function findKeyword(text, keywords = []) {
   return keywords.find((keyword) => text.includes(String(keyword).toLowerCase())) || null;
+}
+
+function findCodexKeyword(text, keywords = [], descriptor) {
+  for (const keyword of keywords) {
+    const normalized = String(keyword).toLowerCase();
+    if (!text.includes(normalized)) {
+      continue;
+    }
+    if (normalized === "image" && descriptor.readOnly && ["research", "review", "analysis"].includes(descriptor.kind)) {
+      continue;
+    }
+    return keyword;
+  }
+  return null;
+}
+
+function checkScopeEntry(entry, workspaceRoot, descriptor) {
+  const rawEntry = String(entry || "").trim();
+  const relativeEntry = rawEntry.replace(/^["']|["']$/g, "");
+  const safePath = resolveScopePath(workspaceRoot, relativeEntry);
+  const checked = {
+    scope: rawEntry,
+    path: safePath,
+    mode: descriptor.readOnly ? "read" : "read-if-existing"
+  };
+
+  if (!safePath.startsWith(workspaceRoot + path.sep) && safePath !== workspaceRoot) {
+    return {
+      ok: false,
+      checked: {
+        ...checked,
+        error: "scope is outside workspace"
+      }
+    };
+  }
+
+  if (hasGlobSyntax(relativeEntry)) {
+    const baseDir = resolveScopePath(workspaceRoot, getGlobBase(relativeEntry));
+    try {
+      fs.accessSync(baseDir, fs.constants.R_OK);
+      return { ok: true, checked: { ...checked, path: baseDir, glob: true } };
+    } catch (error) {
+      return {
+        ok: false,
+        checked: {
+          ...checked,
+          path: baseDir,
+          glob: true,
+          error: error.message
+        }
+      };
+    }
+  }
+
+  try {
+    fs.accessSync(safePath, fs.constants.R_OK);
+    return { ok: true, checked };
+  } catch (error) {
+    if (!descriptor.readOnly) {
+      return { ok: true, checked: { ...checked, missingAllowedForEdit: true } };
+    }
+    return {
+      ok: false,
+      checked: {
+        ...checked,
+        error: error.message
+      }
+    };
+  }
+}
+
+function resolveScopePath(workspaceRoot, scopeEntry) {
+  const withoutTrailingSlash = String(scopeEntry || ".").replace(/[\\/]+$/, "");
+  return path.resolve(workspaceRoot, withoutTrailingSlash || ".");
+}
+
+function hasGlobSyntax(value) {
+  return /[*?[\]{}]/.test(String(value || ""));
+}
+
+function getGlobBase(value) {
+  const parts = String(value || ".").split(/[\\/]/);
+  const baseParts = [];
+  for (const part of parts) {
+    if (hasGlobSyntax(part)) {
+      break;
+    }
+    baseParts.push(part);
+  }
+  return baseParts.length > 0 ? baseParts.join(path.sep) : ".";
 }
 
 function toArray(value) {
@@ -1000,7 +1328,8 @@ function isHeadroomInstallPending(line) {
 function isHeadroomInstallFinished(line) {
   return (
     line.includes("[headroom] Headroom installation completed:") ||
-    line.includes("[headroom] Headroom installation failed for")
+    line.includes("[headroom] Headroom installation failed for") ||
+    line.includes("[headroom] Headroom ready.")
   );
 }
 
@@ -1023,7 +1352,9 @@ function prepareHeadroomInvocation(agentName, config, cwd, options) {
     env: {
       AGENT_ROUTER_HEADROOM_CONFIG: JSON.stringify(headroomConfig),
       AGENT_ROUTER_HEADROOM_REPORT_PATH: reportPath,
-      AGENT_ROUTER_HEADROOM_PROJECT_ROOT: cwd
+      AGENT_ROUTER_HEADROOM_PROJECT_ROOT: cwd,
+      AGENT_ROUTER_WORKSPACE_ROOT: cwd,
+      AGENT_ROUTER_HEADROOM_NOTIFY_READY: "1"
     }
   };
 }
@@ -1044,6 +1375,10 @@ function readHeadroomReport(reportPath) {
       // The worker may have exited before it could write the sidecar.
     }
   }
+}
+
+function stripBom(text) {
+  return String(text || "").replace(/^\uFEFF/, "");
 }
 
 function makeRunId(date) {

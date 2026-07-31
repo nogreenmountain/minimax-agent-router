@@ -17,6 +17,10 @@ export const DEFAULT_HEADROOM_CONFIG = {
   savingsProfile: "coding",
   installWaitMs: 1200000,
   startupTimeoutMs: 300000,
+  preloadOnnxModel: true,
+  onnxModelRepo: "Qdrant/all-MiniLM-L6-v2-onnx",
+  onnxModelFiles: ["model.onnx", "tokenizer.json"],
+  onnxDownloadTimeoutMs: 120000,
   portRangeStart: 18787,
   portRangeSize: 1000,
   telemetry: false,
@@ -65,6 +69,20 @@ export function normalizeHeadroomConfig(config = {}, env = process.env) {
       1000,
       3600000,
       DEFAULT_HEADROOM_CONFIG.installWaitMs
+    ),
+    preloadOnnxModel: parseBoolean(
+      env.AGENT_ROUTER_HEADROOM_PRELOAD_ONNX_MODEL,
+      Boolean(merged.preloadOnnxModel)
+    ),
+    onnxModelRepo: merged.onnxModelRepo || DEFAULT_HEADROOM_CONFIG.onnxModelRepo,
+    onnxModelFiles: Array.isArray(merged.onnxModelFiles)
+      ? merged.onnxModelFiles.map(String)
+      : DEFAULT_HEADROOM_CONFIG.onnxModelFiles,
+    onnxDownloadTimeoutMs: clampInteger(
+      env.AGENT_ROUTER_HEADROOM_ONNX_DOWNLOAD_TIMEOUT_MS || merged.onnxDownloadTimeoutMs,
+      1000,
+      600000,
+      DEFAULT_HEADROOM_CONFIG.onnxDownloadTimeoutMs
     ),
     portRangeStart: clampInteger(merged.portRangeStart, 1024, 65535, 18787),
     portRangeSize: clampInteger(merged.portRangeSize, 1, 10000, 1000),
@@ -406,6 +424,7 @@ export async function getHeadroomStatus(workspace, config = {}) {
     runnable: installed,
     enabled: running,
     status: running ? "running" : installed ? "stopped" : "not-installed",
+    startsOnDemand: !running,
     note: running
       ? "Headroom is running for this workspace."
       : installed
@@ -490,6 +509,7 @@ export function sanitizeHeadroomReport(report = {}) {
     "runnable",
     "enabled",
     "status",
+    "startsOnDemand",
     "note",
     "reason",
     "baseUrl",
@@ -510,6 +530,7 @@ export function sanitizeHeadroomReport(report = {}) {
     "inputTokens",
     "tokensSaved",
     "savingsPercent",
+    "interpretation",
     "error"
   ];
   const clean = {};
@@ -518,6 +539,14 @@ export function sanitizeHeadroomReport(report = {}) {
       continue;
     }
     clean[key] = typeof report[key] === "string" ? redactSecrets(report[key]) : report[key];
+  }
+  if (
+    clean.enabled === true &&
+    clean.tokensSaved === 0 &&
+    clean.interpretation === undefined
+  ) {
+    clean.interpretation =
+      "Task was too small or cache-oriented; zero savings does not mean Headroom failed.";
   }
   return clean;
 }
@@ -564,16 +593,67 @@ export function installHeadroom(config = {}, options = {}) {
   if (install.status !== 0 || install.error) {
     throw new Error(`Failed to install Headroom: ${install.stderr || install.error?.message}`);
   }
+  const memoryModel = preloadHeadroomOnnxModel(venvPython, normalizedConfig, {
+    env: options.env || process.env
+  });
 
   return {
     status: "installed",
     command: paths.venvCommand,
     packageSpec: normalizedConfig.packageSpec,
+    memoryModel,
     outputTail: String(install.stdout || "")
       .split(/\r?\n/)
       .filter(Boolean)
       .slice(-3)
       .join("\n")
+  };
+}
+
+export function preloadHeadroomOnnxModel(venvPython, config = {}, options = {}) {
+  const normalizedConfig = normalizeHeadroomConfig(config, options.env || process.env);
+  if (!normalizedConfig.preloadOnnxModel) {
+    return {
+      status: "skipped",
+      repo: normalizedConfig.onnxModelRepo,
+      files: normalizedConfig.onnxModelFiles
+    };
+  }
+
+  const runSpawnSync = options.spawnSync || spawnSync;
+  const script = [
+    "from huggingface_hub import hf_hub_download",
+    `repo_id = ${JSON.stringify(normalizedConfig.onnxModelRepo)}`,
+    `filenames = ${JSON.stringify(normalizedConfig.onnxModelFiles)}`,
+    "for filename in filenames:",
+    "    hf_hub_download(repo_id=repo_id, filename=filename)"
+  ].join("\n");
+  const result = runSpawnSync(venvPython, ["-c", script], {
+    encoding: "utf8",
+    env: {
+      ...(options.env || process.env),
+      PYTHONIOENCODING: "utf-8",
+      PYTHONUTF8: "1"
+    },
+    timeout: normalizedConfig.onnxDownloadTimeoutMs,
+    maxBuffer: 5 * 1024 * 1024,
+    windowsHide: true
+  });
+
+  if (result.status === 0 && !result.error) {
+    return {
+      status: "ready",
+      repo: normalizedConfig.onnxModelRepo,
+      files: normalizedConfig.onnxModelFiles
+    };
+  }
+
+  return {
+    status: "degraded",
+    repo: normalizedConfig.onnxModelRepo,
+    files: normalizedConfig.onnxModelFiles,
+    note: "Headroom proxy is usable, but semantic memory may degrade because the ONNX embedding model could not be preloaded.",
+    error: String(result.stderr || result.error?.message || "unknown preload failure").trim()
   };
 }
 

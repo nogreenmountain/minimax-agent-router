@@ -93,6 +93,66 @@ describe("agent-router CLI", () => {
     assert.match(payload.stdout, /npm test -- parser/);
   });
 
+  it("routes every task in a tasks[] JSON file", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-cli-batch-route-"));
+    const configPath = writeConfig(tmpDir);
+    const tasksPath = path.join(tmpDir, "tasks.json");
+    fs.writeFileSync(
+      tasksPath,
+      JSON.stringify({
+        tasks: [
+          {
+            id: "image-research",
+            kind: "research",
+            readOnly: true,
+            task: "Research image processing libraries.",
+            scope: ["src/image-pipeline"]
+          },
+          {
+            id: "deployment",
+            kind: "research",
+            readOnly: true,
+            task: "Analyze production deployment rollback policy."
+          }
+        ]
+      }),
+      "utf8"
+    );
+
+    const result = runCli(["route", "--task-file", tasksPath, "--json", "--config", configPath], tmpDir);
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.kind, "batch");
+    assert.equal(payload.tasks[0].decision, "delegate");
+    assert.equal(payload.tasks[1].decision, "codex");
+    assert.equal(payload.summary.delegate, 1);
+    assert.equal(payload.summary.codex, 1);
+  });
+
+  it("accepts UTF-8 BOM task files written by Windows PowerShell", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-cli-bom-"));
+    const configPath = writeConfig(tmpDir);
+    const taskPath = path.join(tmpDir, "task.json");
+    fs.writeFileSync(
+      taskPath,
+      `\uFEFF${JSON.stringify({
+        kind: "research",
+        readOnly: true,
+        task: "Research image processing libraries.",
+        scope: ["README.md"]
+      })}`,
+      "utf8"
+    );
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "# Demo\n", "utf8");
+
+    const result = runCli(["route", "--task-file", taskPath, "--json", "--config", configPath], tmpDir);
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.assessment.decision, "delegate");
+  });
+
   it("runs an explicit agent and writes a log", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-cli-"));
     const configPath = writeConfig(tmpDir);
@@ -345,7 +405,7 @@ function writeConfig(tmpDir) {
         logPath: ".agent-router/runs.jsonl",
         defaults: { agent: "nodeEcho", think: "low", timeoutMs: 10000 },
         routing: {
-          codexKeywords: ["规划", "review", "生图"],
+          codexKeywords: ["规划", "review", "生图", "deployment", "secret"],
           preferredAgentOrder: ["nodeEcho"]
         },
         agents: {

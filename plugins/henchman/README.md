@@ -15,6 +15,18 @@ Claude Code + MiniMax 是执行助手，适合处理边界明确的小任务：�
 
 MiniMax 的输出不是最终结果，必须由 Codex 检查后再采用。
 
+## v0.6：可靠委派
+
+v0.6.0 的目标是让 Henchman 从“能跑”变成“真的能帮 Codex 省时间”：
+
+- worker 会收到当前 workspace root，并通过 Claude Code `--add-dir` 获得读项目文件的权限。
+- `run` / `run-many` 启动前会做 workspace preflight；只读 scope 读不到时返回 `status=blocked, reason=workspace-read-denied`，不会消耗 MiniMax。
+- `route` 能识别 `{ "tasks": [...] }` 批量文件，并逐个给出 `delegate` / `codex` 决策。
+- 只读 image 相关调研可以交给 MiniMax；生成/编辑图片、视觉最终验收、用户上传图片主观判断仍归 Codex。
+- Headroom `doctor` 增加 `startsOnDemand`，`stopped` 表示按需启动；`tokensSaved=0` 会给正常解释。
+- `headroom setup` 会尝试预热 ONNX embedding 模型；下载失败只提示语义记忆可能降级，代理仍可用。
+- 每次 run 增加 `utility` 字段，帮助 Codex 判断 worker 输出是否可行动、是否建议复用。
+
 ## Task Gate
 
 插件现在默认先做任务适配判断。高风险、过宽、预计超过 5 分钟、编辑范围不清、代码任务没有准确测试命令、陌生 API 没有示例的任务会直接返回给 Codex，不调用 MiniMax。

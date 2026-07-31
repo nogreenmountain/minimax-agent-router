@@ -72,6 +72,77 @@ describe("claude-minimax wrapper", () => {
     assert.equal(payload.env.ANTHROPIC_SMALL_FAST_MODEL, "MiniMax-M3[1m]");
   });
 
+  it("passes the router workspace root to Claude Code as an allowed directory", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-minimax-workspace-"));
+    const workspace = path.join(tmpDir, "workspace");
+    const fakeClaudePath = path.join(tmpDir, "fake-claude.js");
+    fs.mkdirSync(workspace, { recursive: true });
+    fs.writeFileSync(
+      fakeClaudePath,
+      [
+        "process.stdin.resume();",
+        "process.stdin.on('end', () => {",
+        "  process.stdout.write(JSON.stringify({ args: process.argv.slice(2) }));",
+        "});"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = spawnSync(process.execPath, [wrapperPath, "--model", "MiniMax-M3[1m]"], {
+      cwd: workspace,
+      input: "Inspect files.",
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        MINIMAX_API_KEY: "minimax-test-key",
+        AGENT_ROUTER_HEADROOM_MODE: "off",
+        AGENT_ROUTER_WORKSPACE_ROOT: workspace,
+        CLAUDE_MINIMAX_CLI: process.execPath,
+        CLAUDE_MINIMAX_CLI_ARGS: JSON.stringify([fakeClaudePath])
+      },
+      windowsHide: true
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    const addDirIndex = payload.args.indexOf("--add-dir");
+    assert.ok(addDirIndex > -1);
+    assert.equal(payload.args[addDirIndex + 1], workspace);
+  });
+
+  it("does not pass --add-dir when no router workspace root is provided", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-minimax-no-workspace-"));
+    const fakeClaudePath = path.join(tmpDir, "fake-claude.js");
+    fs.writeFileSync(
+      fakeClaudePath,
+      [
+        "process.stdin.resume();",
+        "process.stdin.on('end', () => {",
+        "  process.stdout.write(JSON.stringify({ args: process.argv.slice(2) }));",
+        "});"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = spawnSync(process.execPath, [wrapperPath, "--model", "MiniMax-M3[1m]"], {
+      cwd: tmpDir,
+      input: "Inspect files.",
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        MINIMAX_API_KEY: "minimax-test-key",
+        AGENT_ROUTER_HEADROOM_MODE: "off",
+        CLAUDE_MINIMAX_CLI: process.execPath,
+        CLAUDE_MINIMAX_CLI_ARGS: JSON.stringify([fakeClaudePath])
+      },
+      windowsHide: true
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.args.includes("--add-dir"), false);
+  });
+
   it("routes Claude through Headroom and writes a secret-free sidecar report", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-minimax-headroom-"));
     const fakeClaudePath = path.join(tmpDir, "fake-claude.js");
@@ -201,6 +272,7 @@ describe("claude-minimax wrapper", () => {
         "acceptEdits"
       ]);
       assert.equal(payload.input, "请只回复 OK");
+      assert.doesNotMatch(result.stderr, /DEP0190/);
     });
   }
 

@@ -11,6 +11,20 @@ Codex -> Task Gate -> Claude Code CLI -> Headroom 本地代理 -> MiniMax
 
 简单说：Codex 当负责人，MiniMax 当执行助手，Headroom 负责压缩重复上下文并让同一项目的 worker 共享长期记忆。
 
+## v0.6 更新方向：Reliable Delegation Release
+
+这一版重点不是加更多 agent，而是让 MiniMax 真正帮 Codex 省时间：
+
+- `run` / `run-many` 会把当前 workspace root 显式传给 Claude Code，并通过 `--add-dir` 授权 worker 读取项目文件。
+- 启动 worker 前会做 workspace preflight：确认工作区可读；只读任务的 `scope` 文件或目录读不到时直接返回 `status=blocked, reason=workspace-read-denied`，不消耗 MiniMax 调用。
+- `route --task-file tasks.json` 现在能识别 `{ "tasks": [...] }`，逐个输出 `delegate` / `codex` 决策；`run-many` 也复用同一套 gate。
+- `image` 关键词不再一刀切。只读调研、图像处理库比较、OpenCV/SAM/vectorizer 方案分析可以交给 MiniMax；生成/编辑图片、视觉最终验收、用户上传图片的主观判断仍留给 Codex。
+- Headroom `doctor` 增加 `startsOnDemand`，`status=stopped` 表示按任务启动，不是故障；`tokensSaved=0` 会解释“小任务或缓存命中少不代表 Headroom 失败”。
+- `headroom setup` 会尝试预下载 `Qdrant/all-MiniLM-L6-v2-onnx` 的 `model.onnx` 和 `tokenizer.json`；下载失败只标记语义记忆可能降级，代理仍可继续用。
+- 每次 run 结果增加 `utility`，帮助 Codex 快速判断这次 worker 输出是 `high / medium / low`，以及是否建议继续复用。
+
+v0.6.0 的验收口径：Codex 给 MiniMax 一个只读调研或窄范围代码任务时，MiniMax 能读到正确文件、route 判断合理、输出可核查结果，并且不会因为关键词或 Headroom 状态制造额外困惑。
+
 ## v0.5 更新方向：Headroom 随插件首次使用自动安装
 
 这一版把开源项目 [Headroom](https://github.com/headroomlabs-ai/headroom) 运行时绑定进插件流程：

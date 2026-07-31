@@ -14,6 +14,7 @@ import {
   getHeadroomStatus,
   getWorkspaceIdentity,
   normalizeHeadroomConfig,
+  preloadHeadroomOnnxModel,
   resolveProxyPid,
   resolveHeadroomPaths,
   sanitizeHeadroomReport,
@@ -114,6 +115,7 @@ describe("Headroom reporting", () => {
     assert.equal(status.installed, true);
     assert.equal(status.runnable, true);
     assert.equal(status.status, "stopped");
+    assert.equal(status.startsOnDemand, true);
     assert.match(status.note, /starts on demand/i);
   });
 
@@ -192,6 +194,40 @@ describe("Headroom reporting", () => {
     assert.equal("apiKey" in report, false);
     assert.doesNotMatch(serialized, /secret-key|sk-secret-value/);
     assert.match(report.error, /\[redacted\]/);
+  });
+
+  it("explains zero savings as normal for small or cache-oriented tasks", () => {
+    const report = sanitizeHeadroomReport({
+      enabled: true,
+      status: "started",
+      requests: 2,
+      inputTokens: 300,
+      tokensSaved: 0,
+      savingsPercent: 0
+    });
+
+    assert.equal(report.tokensSaved, 0);
+    assert.match(report.interpretation, /zero savings does not mean Headroom failed/i);
+  });
+
+  it("treats ONNX model preload failures as degraded memory instead of install failure", () => {
+    const result = preloadHeadroomOnnxModel(process.execPath, {}, {
+      spawnSync: () => ({ status: 1, stderr: "HuggingFace connection timed out" })
+    });
+
+    assert.equal(result.status, "degraded");
+    assert.match(result.note, /proxy is usable/i);
+    assert.match(result.error, /HuggingFace connection timed out/i);
+  });
+
+  it("allows ONNX model preload to be disabled", () => {
+    const result = preloadHeadroomOnnxModel(process.execPath, { preloadOnnxModel: false }, {
+      spawnSync: () => {
+        throw new Error("should not run");
+      }
+    });
+
+    assert.equal(result.status, "skipped");
   });
 });
 

@@ -17,7 +17,9 @@ import {
   isCommandAvailable,
   loadConfig,
   loadRuns,
+  preflightWorkspaceAccess,
   renderArgs,
+  routeTasks,
   summarizeRuns
 } from "../src/router.js";
 
@@ -212,6 +214,94 @@ describe("assessTask", () => {
     }, DEFAULT_CONFIG);
 
     assert.equal(assessment.decision, "delegate");
+  });
+
+  it("does not block read-only image research just because it mentions image", () => {
+    const assessment = assessTask({
+      kind: "research",
+      readOnly: true,
+      task: "Research image segmentation libraries and compare OpenCV, SAM, and vectorizer options.",
+      scope: ["src/image-pipeline"],
+      estimatedMinutes: 4
+    }, DEFAULT_CONFIG);
+
+    assert.equal(assessment.decision, "delegate");
+    assert.equal(assessment.signals.includes("codex-owned"), false);
+  });
+
+  it("keeps image generation and visual final acceptance with Codex", () => {
+    const assessment = assessTask({
+      kind: "research",
+      readOnly: true,
+      task: "Generate an image and do the final visual acceptance for the uploaded picture."
+    }, DEFAULT_CONFIG);
+
+    assert.equal(assessment.decision, "codex");
+    assert.ok(assessment.signals.includes("image-owned"));
+  });
+});
+
+describe("routeTasks", () => {
+  it("evaluates every task in a tasks[] file instead of treating it as one edit task", () => {
+    const routed = routeTasks({
+      tasks: [
+        {
+          id: "image-research",
+          kind: "research",
+          readOnly: true,
+          task: "Research image processing libraries.",
+          scope: ["src/image-pipeline"]
+        },
+        {
+          id: "security",
+          kind: "research",
+          readOnly: true,
+          task: "Review the deployment secret rotation policy."
+        }
+      ]
+    }, DEFAULT_CONFIG, {
+      env: { MINIMAX_API_KEY: "test-key" },
+      isCommandAvailable: () => true
+    });
+
+    assert.equal(routed.kind, "batch");
+    assert.equal(routed.tasks[0].id, "image-research");
+    assert.equal(routed.tasks[0].decision, "delegate");
+    assert.equal(routed.tasks[1].decision, "codex");
+    assert.equal(routed.summary.delegate, 1);
+    assert.equal(routed.summary.codex, 1);
+  });
+});
+
+describe("preflightWorkspaceAccess", () => {
+  it("passes when scope files can be read from the selected workspace", () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-workspace-ok-"));
+    fs.mkdirSync(path.join(workspace, "src"), { recursive: true });
+    fs.writeFileSync(path.join(workspace, "src", "core.py"), "print('ok')\n", "utf8");
+
+    const result = preflightWorkspaceAccess({
+      kind: "research",
+      readOnly: true,
+      scope: ["src/core.py"]
+    }, workspace);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.workspaceReadOk, true);
+  });
+
+  it("blocks before spending worker tokens when a read-only scope file is unavailable", () => {
+    const workspace = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-workspace-denied-"));
+
+    const result = preflightWorkspaceAccess({
+      kind: "research",
+      readOnly: true,
+      scope: ["src/missing.py"]
+    }, workspace);
+
+    assert.equal(result.ok, false);
+    assert.equal(result.status, "blocked");
+    assert.equal(result.reason, "workspace-read-denied");
+    assert.deepEqual(result.scope, ["src/missing.py"]);
   });
 });
 
@@ -554,6 +644,10 @@ describe("executeManyTasks", () => {
   it("runs independent tasks with a concurrency limit and preserves result order", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-many-"));
     const logPath = path.join(tmpDir, "runs.jsonl");
+    fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "src", "one.ts"), "export const one = 1;\n", "utf8");
+    fs.writeFileSync(path.join(tmpDir, "src", "two.ts"), "export const two = 2;\n", "utf8");
+    fs.writeFileSync(path.join(tmpDir, "src", "three.ts"), "export const three = 3;\n", "utf8");
     const config = {
       defaults: { agent: "nodeDelay", think: "low", timeoutMs: 5000 },
       routing: { codexKeywords: ["planning"], preferredAgentOrder: ["nodeDelay"] },
@@ -598,6 +692,38 @@ describe("executeManyTasks", () => {
     assert.equal(events.filter((event) => event.type === "task-finished").length, 3);
     assert.ok(elapsed < 650, `expected parallel execution, took ${elapsed}ms`);
     assert.equal(loadRuns(logPath).length, 3);
+  });
+
+  it("blocks unreadable scoped tasks before launching the worker", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-router-many-preflight-"));
+    const config = {
+      defaults: { agent: "nodeEcho", think: "low", timeoutMs: 5000 },
+      routing: { codexKeywords: ["planning"], preferredAgentOrder: ["nodeEcho"] },
+      agents: {
+        nodeEcho: {
+          enabled: true,
+          command: process.execPath,
+          args: ["-e", "process.stdout.write('should-not-run')"],
+          promptMode: "stdin",
+          defaultModel: "mini",
+          defaultThink: "low"
+        }
+      }
+    };
+
+    const result = await executeManyTasks([
+      { id: "missing-read", kind: "research", readOnly: true, task: "Inspect the missing file.", scope: ["src/missing.ts"] }
+    ], config, {
+      parallel: 1,
+      cwd: tmpDir,
+      isCommandAvailable: () => true
+    });
+
+    assert.equal(result.status, "blocked");
+    assert.equal(result.summary.blockedTasks, 1);
+    assert.equal(result.results[0].status, "blocked");
+    assert.equal(result.results[0].reason, "workspace-read-denied");
+    assert.equal(result.results[0].stdout, "");
   });
 
   it("keeps Codex-owned tasks out of the worker pool", async () => {
